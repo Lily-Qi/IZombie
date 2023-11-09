@@ -51,11 +51,45 @@ class IZenv:
             col = action_area % N_LANES + 4
             sun = self._get_sun()
             # print(sun)
-            self.world.zombie_factory.create(zombie_deck[z_idx][0], row, col)
             sun -= zombie_deck[z_idx][1]
+            if sun < 0:
+                print("error, sun cannot be negative")
+                return
+            self.world.zombie_factory.create(zombie_deck[z_idx][0], row, col)
             # print(type(sun))
             # print(zombie_deck[z_idx][1])
-            self.world.scene.set_sun(sun) 
+            self.world.scene.set_sun(sun)
+    
+    def get_valid_actions(self):
+        # Example return:
+        # [ 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+        # 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48
+        # 49 50] or
+        # [ 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+        # 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48
+        # 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72
+        # 73 74 75] or
+        # [ 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
+        # 24 25]
+        actions = np.arange(self.action_no)
+        masks = self.get_action_mask()
+        return actions[masks]
+    
+    def get_action_mask(self):
+        sun = self._get_sun()
+        data = json.loads(self.world.get_json())
+        z_no = len(data['zombies'])
+        mask = np.zeros(self.action_no, dtype=bool)
+        if z_no>0:
+            mask[0] = True
+        if sun >= 50:
+            mask[1:26] = True
+        if sun >= 125:
+            mask[26:51] = True
+        if sun >= 175:
+            mask[51:] = True
+        return mask
+
 
     def _zombie_x_to_col(self, x):
         col = (x-10)/80-1
@@ -69,5 +103,3 @@ class IZenv:
     def _get_reward(self):
         sun = self._get_sun()
         return sun//25
-
-    
