@@ -67,7 +67,6 @@ class IZenv:
             action_area = action%(N_LANES * Z_LANE_LENGTH)
             row = action_area//N_LANES
             col = action_area % N_LANES + 4
-            c
             # print(sun)
             sun -= zombie_deck[z_idx][1]
             if sun < 0:
