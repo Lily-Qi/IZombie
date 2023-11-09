@@ -40,7 +40,25 @@ class IZenv:
         for _ in range(50):
             self.world.update()
         reward = self._get_reward()
+        ob = self._get_obs()
         return reward
+    
+    def _get_obs(self):
+        data = json.loads(self.world.get_json())
+        plantHP = np.zeros(len(data['plants']), dtype=int) #Each plant HP
+        plantType = np.zeros(len(data['plants']), dtype=int) #Each plant type
+        zombieHP = np.zeros(len(data['zombies']), dtype=int) #Each zombie HP
+        zombieType = np.zeros(len(data['zombies']), dtype=int) #Each zombie type
+        sunNum = np.array([self._get_sun()]) #Total sun number
+        brainStatus = np.array([1, 1, 1, 1, 1]) #Each brain status
+
+        for i, plant in enumerate(data['plants']):
+            plantHP[i] = plant['hp']
+            plantType[i] = plant['type']
+        
+        for i, zombie in enumerate(data['zombies']):
+            zombieHP[i] = zombie['hp']
+            zombieType[i] = zombie['type']
     
     def _take_action(self, action):
         if action > 0:
@@ -49,7 +67,7 @@ class IZenv:
             action_area = action%(N_LANES * Z_LANE_LENGTH)
             row = action_area//N_LANES
             col = action_area % N_LANES + 4
-            sun = self._get_sun()
+            c
             # print(sun)
             sun -= zombie_deck[z_idx][1]
             if sun < 0:
