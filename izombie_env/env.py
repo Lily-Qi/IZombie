@@ -1,5 +1,6 @@
 import numpy as np
 import json
+import math
 from pvzemu import World, SceneType, ZombieType, PlantType
 
 plant_counts = {
@@ -20,12 +21,12 @@ Z_LANE_LENGTH = LANE_LENGTH - P_LANE_LENGTH
 class IZenv:
     def __init__(self):
         self.action_no = N_ZOMBIE_TYPE * N_LANES * Z_LANE_LENGTH + 1
-        self.world = World(SceneType.night)
-        self.world.scene.stop_spawn = True
-        self.world.scene.is_iz = True
         self.reset()
     
     def reset(self):
+        self.world = World(SceneType.night)
+        self.world.scene.stop_spawn = True
+        self.world.scene.is_iz = True
         self.world.scene.set_sun(150)
         plant_list = [plant for plant, count in plant_counts.items() for _ in range(count)]
         np.random.shuffle(plant_list)
@@ -54,7 +55,12 @@ class IZenv:
             sun -= zombie_deck[z_idx][1]
             # print(type(sun))
             # print(zombie_deck[z_idx][1])
-            self.world.scene.set_sun(sun)        
+            self.world.scene.set_sun(sun) 
+
+    def _zombie_x_to_col(self, x):
+        col = (x-10)/80-1
+        return math.ceil(col)
+
 
     def _get_sun(self):
         data = json.loads(self.world.get_json())
