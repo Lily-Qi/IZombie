@@ -1,7 +1,10 @@
 from env import IZenv
 
 env = IZenv()
-for _ in range(100):
-    env.world.update()
 
-print(env.world.get_json())
+env.step(30)
+
+for _ in range(30):
+    env.step(0)
+
+# print(env.world.get_json())
