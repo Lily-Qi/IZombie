@@ -44,6 +44,9 @@ reward = env.step(action)
 - `26-50` implements buckethead
 - `51-75` implements football
 
+### Observe state
+- `array initialization`: Arrays for types are initialized to -1 to indicate that they are empty.
+
 ### Getters
 
 - `_get_sun`: Returns the current amount of sun available in the game.
@@ -72,3 +75,34 @@ zombie_deck = [[ZombieType.zombie, 50], [ZombieType.buckethead, 125], [ZombieTyp
 - The sun value is a critical part of the game's state, influencing the spawning of zombies and calculation of rewards.
 
 Ensure that you have the `pvzemu` emulator properly set up and configured to work with this module.
+
+## Example code
+
+```python
+env = IZenv()
+env.step(1)
+```
+
+[ 1.          1.          1.          1.          1.          1.
+  1.          1.          1.          1.          1.          1.
+  1.          1.          1.          1.          1.          1.
+  1.          1.          1.          0.          2.          3.
+  1.          0.          0.          1.          0.          2.
+  0.          0.          0.          2.          3.          0.
+  1.          0.          1.          1.          0.          0.
+  0.          0.          0.54        0.          0.          0.
+  0.          0.          0.          0.          0.          0.
+  0.          0.          0.          0.          0.          0.
+  0.          0.          0.          0.          0.          0.
+  0.          0.          0.          0.          0.          0.
+  0.          0.          0.          0.          0.          0.
+  0.          0.          0.          0.          0.          0.
+  0.         -1.         -1.         -1.         -1.          0.
+ -1.         -1.         -1.         -1.         -1.         -1.
+ -1.         -1.         -1.         -1.         -1.         -1.
+ -1.         -1.         -1.         -1.         -1.         -1.
+ -1.         -1.         -1.         -1.         -1.         -1.
+ -1.         -1.         -1.         -1.         -1.         -1.
+ -1.         -1.         -1.         -1.         -1.         -1.
+ -1.         -1.         -1.         -1.          0.05128205  1.
+  1.          1.          1.          1.        ]
