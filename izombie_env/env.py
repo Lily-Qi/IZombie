@@ -52,6 +52,7 @@ class IZenv:
 
         reward = self._get_reward()
         state = self.get_state()
+        # print(state)
         isEnded = self._get_game_status(state)
         isWin = self._get_game_result(state)
         return reward, state, isEnded, isWin
@@ -127,7 +128,7 @@ class IZenv:
         
         return np.concatenate([plantHPArray, plantTypeArray, zombieHPArray, zombieTypeArray, sunNum, brainStatusArray])
     
-    def get_valid_actions(self):
+    def get_valid_actions(self, satate):
         # Example return:
         # [ 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
         # 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48
@@ -139,12 +140,12 @@ class IZenv:
         # [ 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
         # 24 25]
         actions = np.arange(self.action_no)
-        masks = self.get_action_mask()
+        masks = self.get_action_mask(satate)
         return actions[masks]
     
-    def get_action_mask(self):
-        sun = self._get_sun()
-        z_no = len(self._data['zombies'])
+    def get_action_mask(self, state):
+        sun = state[-6] * SUN_MAX
+        z_no = self._get_zombie_num(state)
         mask = np.zeros(self.action_no, dtype=bool)
         if z_no>0:
             mask[0] = True
@@ -155,7 +156,6 @@ class IZenv:
         if sun >= 175:
             mask[51:] = True
         return mask
-
 
     def _zombie_x_to_col(self, x):
         col = (x-10)/80-1
