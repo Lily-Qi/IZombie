@@ -1,80 +1,62 @@
-# README for IZenv
+# README for PvZ Emulator Environment
 
 ## Overview
-
-This is designed to simulate an environment for the mini game "I, Zombie" from (PvZ). It makes use of the `pvzemu` emulator to create a world, manage the spawning of plants and zombies, and simulate the game mechanics. The module allows the creation of a random IZombie level 1 environment for AI training or simulation purposes.
+This Python module provides an emulation environment for a simplified version of the popular game "Plants vs. Zombies". It is designed to interface with the `pvzemu` package to create a game world, manage game state, and simulate interactions between plants and zombies.
 
 ## Features
-
-- Initialization of a PvZ world in night scene.
 - Customizable plant and zombie types and counts.
-- Ability to reset the world for a new simulation.
-- Methods to perform actions within the world and update the game state.
-- Functionality to calculate rewards based on the game state.
+- A grid-based world representing the lawn with distinct plant and zombie areas.
+- Night scene emulation with no spawning of additional zombies.
+- A reinforcement learning environment with state and reward system.
 
-## Requirements
+## Installation
 
-- numpy
-- json
-- pvzemu (a custom emulator for PvZ)
+Before you can run this script, you need to have Python installed on your system. Python 3.6 or higher is recommended. You also need to install the `pvzemu` package, which this script depends on, as well as `numpy`.
+
+```bash
+pip install numpy
+pip install pvzemu # This might be a hypothetical package for the purpose of this README.
+```
 
 ## Usage
 
-To use this module, you need to import it and instantiate the `IZenv` class. Once instantiated, you can use its methods to interact with the PvZ environment.
+To use this emulator, you need to import the `IZenv` class from this module and create an instance of it. Here's a simple example:
 
-### Initialization
 ```python
-from your_module import IZenv
+# Initialize the environment
 env = IZenv()
+
+# Reset the environment to the starting state
+state = env.reset()
+
+# Run a simulation step with a given action
+action = 0  # Replace with a valid action
+reward, next_state, is_ended, is_win = env.step(action)
 ```
 
-### Reset the World with New Arrangement
-```python
-env.reset()
-```
+### Actions
+The environment accepts an action which corresponds to the creation of a zombie in the game world. The action space is calculated based on the number of zombie types, lanes, and the length of the zombie area.
 
-### Perform an Action
-```python
-reward = env.step(action)
-```
+### States
+The state is a representation of the game world, including the health and types of plants and zombies, the amount of available sun, and the status of the brains (end goal for zombies).
 
-- `action` is an integer representing the specific action to be taken in the environment.
-- `0` means no action
-- `1-25` implements normal zombies from row0col4 to row4col8, row by row
-- `26-50` implements buckethead
-- `51-75` implements football
+### Rewards
+The reward is calculated based on the amount of sun collected, which is a proxy for the player's performance in the game.
 
-### Observe state
-- `array initialization`: Arrays for types are initialized to -1 to indicate that they are empty.
+### End Conditions
+The game ends if there is not enough sun left to spawn zombies and no zombies are left on the screen, or if the zombies reach the house (brains status is zero).
 
-### Getters
+## Development
 
-- `_get_sun`: Returns the current amount of sun available in the game.
-- `_get_reward`: Calculates the reward based on the current sun amount.
+This environment is designed to be used with reinforcement learning algorithms. You can extend the `IZenv` class to add more features or to customize the environment for your specific use case.
 
-## Customization
+## Contributing
 
-You can customize the plant counts and zombie deck by modifying the `plant_counts` and `zombie_deck` variables, respectively.
+Contributions to this project are welcome. Please fork the repository and submit a pull request with your changes.
 
-```python
-plant_counts = {
-    PlantType.sunflower: 9,
-    PlantType.pea_shooter: 6,
-    PlantType.squash: 3,
-    PlantType.snow_pea: 2
-}
+## License
 
-zombie_deck = [[ZombieType.zombie, 50], [ZombieType.buckethead, 125], [ZombieType.football, 175]]
-```
-
-## Notes
-
-- The PvZ world is initialized with the night scene by default.
-- Plant placement are randomized at the beginning of each reset.
-- The environment supports a fixed number of lanes and plants per lane.
-- The sun value is a critical part of the game's state, influencing the spawning of zombies and calculation of rewards.
-
-Ensure that you have the `pvzemu` emulator properly set up and configured to work with this module.
+Specify the license under which this code is made available.
 
 ## Example code
 

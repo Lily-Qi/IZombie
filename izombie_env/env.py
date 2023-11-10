@@ -190,5 +190,3 @@ class IZenv:
             return True
         
         return False
-
-    
