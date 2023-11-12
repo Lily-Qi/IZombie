@@ -213,7 +213,7 @@ class DQNAgent:
             .reshape(-1, 1)
             .to(device=self.network.device)
         )
-        dones_t = torch.ByteTensor(dones).to(device=self.network.device)
+        dones_t = torch.BoolTensor(dones).to(device=self.network.device)
 
         qvals = torch.gather(
             self.network.get_qvals(states), 1, actions_t
@@ -225,9 +225,7 @@ class DQNAgent:
         qvals_next_pred = self.network.get_qvals(next_states)
         qvals_next_pred[np.logical_not(next_masks)] = qvals_next_pred.min()
         next_actions = torch.max(qvals_next_pred, dim=-1)[1]
-        next_actions_t = (
-            torch.LongTensor(next_actions).reshape(-1, 1).to(device=self.network.device)
-        )
+        next_actions_t = next_actions.reshape(-1, 1).to(device=self.network.device)
         target_qvals = self.network.get_qvals(next_states)
         qvals_next = torch.gather(target_qvals, 1, next_actions_t).detach()
         #################################################################
