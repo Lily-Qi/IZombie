@@ -31,7 +31,7 @@ state = env.reset()
 
 # Run a simulation step with a given action
 action = 0  # Replace with a valid action
-reward, next_state, is_ended, is_win = env.step(action)
+reward, next_state, is_done = env.step(action) # either losing or winning will set is_done to True; if lost, reward is reset to zero
 ```
 
 ### Actions
@@ -64,7 +64,7 @@ Specify the license under which this code is made available.
 env = IZenv()
 env.step(1)
 ```
-
+```
 [ 1.          1.          1.          1.          1.          1.
   1.          1.          1.          1.          1.          1.
   1.          1.          1.          1.          1.          1.
@@ -88,3 +88,4 @@ env.step(1)
  -1.         -1.         -1.         -1.         -1.         -1.
  -1.         -1.         -1.         -1.          0.05128205  1.
   1.          1.          1.          1.        ]
+  ```
