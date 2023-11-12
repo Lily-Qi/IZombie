@@ -1,351 +1,157 @@
 import torch.nn as nn
 import torch
-import torch.nn.functional as F
-import gym
-from pvz import config
-from copy import deepcopy
-from collections import namedtuple, deque
 import numpy as np
-from .threshold import Threshold
-from . import evaluate
+from collections import deque
+import random
 
-HP_NORM = 1
-SUN_NORM = 200
+from izombie_env import env as iz_env
+from izombie_env import config
 
-def sum_onehot(grid):
-    return torch.cat([torch.sum(grid==(i+1), axis=-1).unsqueeze(-1) for i in range(4)], axis=-1)
+# model params
+MODEL_NAME = "136,106,76"
+N_HIDDEN_LAYER_NODES = 106
 
 
 class QNetwork_DQN(nn.Module):
-    
-    def __init__(self, env, learning_rate=1e-3, device='cpu'):
+    def __init__(self, learning_rate=1e-3, device="cpu"):
         super(QNetwork_DQN, self).__init__()
         self.device = device
 
-        self.n_inputs = config.N_LANES * config.LANE_LENGTH + config.N_LANES + len(env.plant_deck) + 1
-        self.n_outputs = env.action_space.n
-        self.actions = np.arange(env.action_space.n)
+        self.n_inputs = (
+            config.N_LANES * config.P_LANE_LENGTH  # plant hp
+            + config.N_LANES * config.P_LANE_LENGTH  # plant type
+            + config.N_LANES * config.LANE_LENGTH  # zombie hp
+            + config.N_LANES * config.LANE_LENGTH  # zombie type
+            + 1  # sun
+            + 5  # brain status
+        )
+        self.n_outputs = iz_env.IZenv().action_no
+        self.actions = np.arange(self.n_outputs)
         self.learning_rate = learning_rate
-        self._grid_size = config.N_LANES * config.LANE_LENGTH
 
         # Set up network
         self.network = nn.Sequential(
-            nn.Linear(self.n_inputs, 50, bias=True),
+            nn.Linear(self.n_inputs, N_HIDDEN_LAYER_NODES, bias=True),
             nn.LeakyReLU(),
-            nn.Linear(50, self.n_outputs, bias=True))
+            nn.Linear(N_HIDDEN_LAYER_NODES, self.n_outputs, bias=True),
+        )
 
         # Set to GPU if cuda is specified
-        if self.device == 'cuda':
+        if self.device == "cuda":
             self.network.cuda()
-            
-        self.optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()),
-                                          lr=self.learning_rate)
-        
-    def decide_action(self, state, mask, epsilon):
-        # mask = self.env.mask_available_actions()
-        if np.random.random() < epsilon:
-            action = np.random.choice(self.actions[mask])
-        else:
-            action = self.get_greedy_action(state, mask)
-        return action
-    
-    def get_greedy_action(self, state, mask):
-        qvals = self.get_qvals(state)
-        qvals[np.logical_not(mask)] = qvals.min()
-        return torch.max(qvals, dim=-1)[1].item()
 
-    def get_qvals(self, state):
-        if type(state) is tuple:
-            state = np.array([np.ravel(s) for s in state])
-            state_t = torch.FloatTensor(state).to(device=self.device)
-            zombie_grid = state_t[:, self._grid_size:(2 * self._grid_size)].reshape(-1, config.LANE_LENGTH)
-            plant_grid = state_t[:, :self._grid_size]
-            zombie_grid = torch.sum(zombie_grid, axis=1).view(-1, config.N_LANES)
-            if self.use_gridnet:
-                plant_grid = self.gridnet(plant_grid)
-            state_t = torch.cat([plant_grid, zombie_grid, state_t[:,2 * self._grid_size:]], axis=1)
-        else:
-            state_t = torch.FloatTensor(state).to(device=self.device)
-            zombie_grid = state_t[self._grid_size:(2 * self._grid_size)].reshape(-1, config.LANE_LENGTH)
-            plant_grid = state_t[:self._grid_size]
-            zombie_grid = torch.sum(zombie_grid, axis=1)
-            if self.use_gridnet:
-                plant_grid = self.gridnet(plant_grid)
-            state_t = torch.cat([plant_grid, zombie_grid, state_t[2 * self._grid_size:]])
-        return self.network(state_t)
+        self.optimizer = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, self.parameters()), lr=self.learning_rate
+        )
 
 
 class DQNAgent:
-    
-    def __init__(self, env, network, buffer, batch_size=32):
-        
-        self._grid_size = config.N_LANES * config.LANE_LENGTH
-        self.env = env
-        self.network = network
-        self.target_network = deepcopy(network)
-        self.buffer = buffer
-        self.threshold = Threshold(seq_length = 100000, start_epsilon=1.0, interpolation="exponential",
-                           end_epsilon=0.05)
-        self.epsilon = 0
-        self.batch_size = batch_size
-        self.window = 100
-        self.reward_threshold = 30000
-        self.initialize()
-        self.player = PlayerQ_DQN(env = env, render=False)
-        
-
-    def take_step(self, mode='train'):
-        mask = np.array(self.env.mask_available_actions())
-        if mode == 'explore':
-            if np.random.random()<0.5:
-                action=0 # Do nothing
-            else:
-                action = np.random.choice(np.arange(self.env.action_space.n)[mask])
-        else:
-            action = self.network.decide_action(self.s_0, mask, epsilon=self.epsilon)
-            self.step_count += 1
-        s_1, r, done, _ = self.env.step(action)
-        s_1 = self._transform_observation(s_1)
-        self.rewards += r
-        self.buffer.append(self.s_0, action, r, done, s_1)
-        self.s_0 = s_1.copy()
-        if done:
-            if mode != "explore": # We document the end of the play
-                self.training_iterations.append(min(config.MAX_FRAMES, self.env._scene._chrono))
-            self.s_0 = self._transform_observation(self.env.reset())
-        return done
-    
-    # Implement DQN training algorithm
-    def train(self, gamma=0.99, max_episodes=100000,
-              network_update_frequency=32,
-              network_sync_frequency=2000,
-              evaluate_frequency=500,
-              evaluate_n_iter=1000):
-
+    def __init__(
+        self,
+        device="cpu",
+        replay_memory_size=100_000,
+        min_replay_memory_size=10_000,
+        gamma=0.99,
+        start_epsilon=1.0,
+        epsilon_decay=0.99975,
+        min_epsilon=0.001,
+        batch_size=32,
+    ):
+        self.min_replay_memory_size = min_replay_memory_size
         self.gamma = gamma
-        # Populate replay buffer
-        while self.buffer.burn_in_capacity() < 1:
-            done = self.take_step(mode='explore')
-        ep = 0
-        training = True
-        self.s_0 = self._transform_observation(self.env.reset())
+        self.epsilon = start_epsilon
+        self.epsilon_decay = epsilon_decay
+        self.min_epsilon = min_epsilon
+        self.batch_size = batch_size
 
+        self.model = QNetwork_DQN(device=device)
+        self.target_model = QNetwork_DQN(device=device)
+        self.replay_memory = deque(maxlen=replay_memory_size)
 
-        while training:
-            self.rewards = 0
-            done = False
-            while done == False:
-                self.epsilon = self.threshold.epsilon(ep)
-                done = self.take_step(mode='train')
-                # Update network
-                if self.step_count % network_update_frequency == 0:
-                    self.update()
-                # Sync networks
-                if self.step_count % network_sync_frequency == 0:
-                    self.target_network.load_state_dict(
-                        self.network.state_dict())
-                    self.sync_eps.append(ep)
-                    
-                if done:
-                    ep += 1
-                    self.training_rewards.append(self.rewards)
-                    self.training_loss.append(np.mean(self.update_loss))
-                    self.update_loss = []
-                    mean_rewards = np.mean(
-                        self.training_rewards[-self.window:])
-                    self.mean_training_rewards.append(mean_rewards)
-
-                    mean_iteration = np.mean(
-                        self.training_iterations[-self.window:])
-                    self.mean_training_iterations.append(mean_iteration)
-                    print("\rEpisode {:d} Mean Rewards {:.2f}\t\t Mean Iterations {:.2f}\t\t".format(
-                        ep, mean_rewards,mean_iteration), end="")
-                    
-                    if ep >= max_episodes:
-                        training = False
-                        print('\nEpisode limit reached.')
-                        break
-                    if mean_rewards >= self.reward_threshold:
-                        training = False
-                        print('\nEnvironment solved in {} episodes!'.format(
-                            ep))
-                        break
-                    if (ep%evaluate_frequency) == evaluate_frequency - 1:
-                        avg_score, avg_iter = evaluate(self.player, self.network, n_iter = evaluate_n_iter, verbose=False)
-                        self.real_iterations.append(avg_iter)
-                        self.real_rewards.append(avg_score)
-
-
-                    
-
-    def calculate_loss(self, batch):
-        full_mask = np.full(self.env.action_space.n, True)
-
-        states, actions, rewards, dones, next_states = [i for i in batch]
-        rewards_t = torch.FloatTensor(rewards).to(device=self.network.device).reshape(-1,1)
-        actions_t = torch.LongTensor(np.array(actions)).reshape(-1,1).to(
-            device=self.network.device)
-        dones_t = torch.ByteTensor(dones).to(device=self.network.device)
-
-        qvals = torch.gather(self.network.get_qvals(states), 1, actions_t) # The selected action already respects the mask
-        
-        #################################################################
-        # DDQN Update
-        next_masks = np.array([self._get_mask(s) for s in next_states])
-        qvals_next_pred = self.network.get_qvals(next_states)
-        qvals_next_pred[np.logical_not(next_masks)] = qvals_next_pred.min()
-        next_actions = torch.max(qvals_next_pred, dim=-1)[1]
-        next_actions_t = torch.LongTensor(next_actions).reshape(-1,1).to(
-            device=self.network.device)
-        target_qvals = self.network.get_qvals(next_states)
-        qvals_next = torch.gather(target_qvals, 1, next_actions_t).detach()
-        #################################################################
-        qvals_next[dones_t] = 0 # Zero-out terminal states
-        expected_qvals = self.gamma * qvals_next + rewards_t
-        loss = nn.MSELoss()(qvals, expected_qvals)
-        return loss
-    
-    def update(self):
-        self.network.optimizer.zero_grad()
-        batch = self.buffer.sample_batch(batch_size=self.batch_size)
-        loss = self.calculate_loss(batch)
-        loss.backward()
-        self.network.optimizer.step()
-        if self.network.device == 'cuda':
-            self.update_loss.append(loss.detach().cpu().numpy())
-        else:
-            self.update_loss.append(loss.detach().numpy())
-
-    def _transform_observation(self, observation):
-        observation = observation.astype(np.float64)
-        observation = np.concatenate([observation[:self._grid_size],
-        observation[self._grid_size:(2*self._grid_size)]/HP_NORM,
-        [observation[2 * self._grid_size]/SUN_NORM], 
-        observation[2 * self._grid_size+1:]])
-        return observation
-
-    def _get_mask(self, observation):
-        empty_cells = np.nonzero((observation[:self._grid_size]==0).reshape(config.N_LANES, config.LANE_LENGTH))
-        mask = np.zeros(self.env.action_space.n, dtype=bool)
-        mask[0] = True
-        empty_cells = (empty_cells[0] + config.N_LANES * empty_cells[1]) * len(self.env.plant_deck)
-
-        available_plants = observation[-len(self.env.plant_deck):]
-        for i in range(len(available_plants)):
-            if available_plants[i]:
-                idx = empty_cells + i + 1
-                mask[idx] = True
-        return mask
-
-    def _grid_to_lane(self, grid):
-        grid = np.reshape(grid, (config.N_LANES, config.LANE_LENGTH))
-        return np.sum(grid, axis=1)/HP_NORM
-        
-    def _save_training_data(self, nn_name):
-        np.save(nn_name+"_rewards", self.training_rewards)
-        np.save(nn_name+"_iterations", self.training_iterations)
-        np.save(nn_name+"_real_rewards", self.real_rewards)
-        np.save(nn_name+"_real_iterations", self.real_iterations)
-        torch.save(self.training_loss, nn_name+"_loss")
-        
-    def initialize(self):
-        self.training_rewards = []
-        self.training_loss = []
-        self.training_iterations = []
-        self.real_rewards = []
-        self.real_iterations = []
-        self.update_loss = []
-        self.mean_training_rewards = []
-        self.mean_training_iterations = []
-        self.sync_eps = []
-        self.rewards = 0
         self.step_count = 0
-        self.s_0 = self._transform_observation(self.env.reset())
 
-class experienceReplayBuffer_DQN:
-
-    def __init__(self, memory_size=50000, burn_in=10000):
-        self.memory_size = memory_size
-        self.burn_in = burn_in
-        self.Buffer = namedtuple('Buffer', 
-            field_names=['state', 'action', 'reward', 'done', 'next_state'])
-        self.replay_memory = deque(maxlen=memory_size)
-
-    def sample_batch(self, batch_size=32):
-        samples = np.random.choice(len(self.replay_memory), batch_size,
-                                   replace=False)
-        # Use asterisk operator to unpack deque 
-        batch = zip(*[self.replay_memory[i] for i in samples])
-        return batch
-
-    def append(self, state, action, reward, done, next_state):
-        self.replay_memory.append(
-            self.Buffer(state, action, reward, done, next_state))
-
-    def burn_in_capacity(self):
-        return len(self.replay_memory) / self.burn_in
-
-
-class PlayerQ_DQN():
-    def __init__(self, env = None, render=True):
-        if env==None:
-            self.env = gym.make('gym_pvz:pvz-env-v2')
+    def decide_action(self, state, valid_actions):
+        if np.random.rand() < self.epsilon:
+            return np.random.choice(valid_actions)
         else:
-            self.env = env
-        self.render = render
-        self._grid_size = config.N_LANES * config.LANE_LENGTH
+            with torch.no_grad():
+                state_tensor = (
+                    torch.FloatTensor(state).unsqueeze(0).to(self.model.device)
+                )
+                q_values = self.model.network(state_tensor).detach()
 
-        
-    def get_actions(self):
-        return list(range(self.env.action_space.n))
+                valid_q_values = q_values[0, valid_actions]
+                max_q_index = torch.argmax(valid_q_values).item()
+                return valid_actions[max_q_index]
 
-    def num_observations(self):
-        return config.N_LANES * config.LANE_LENGTH + config.N_LANES + len(self.env.plant_deck) + 1
+    def update_epsilon(self):
+        self.epsilon *= self.epsilon_decay
+        self.epsilon = max(self.min_epsilon, self.epsilon)
 
-    def num_actions(self):
-        return self.env.action_space.n
+    def train(
+        self, episodes, update_main_every=5, update_target_every=2_000, max_step=10_000
+    ):
+        self.model.train()  # Set the network to training mode
+        env = iz_env.IZenv(max_step=max_step)
 
-    def _transform_observation(self, observation):
-        observation = observation.astype(np.float64)
-        observation = np.concatenate([observation[:self._grid_size],
-        observation[self._grid_size:(2*self._grid_size)]/HP_NORM,
-        [observation[2 * self._grid_size]/SUN_NORM], 
-        observation[2 * self._grid_size+1:]])
-        return observation
+        for episode in range(episodes):
+            print(f"episode = {episode}")
+            state = env.reset()
+            total_loss = 0
+            done = False
 
-    def _grid_to_lane(self, grid):
-        grid = np.reshape(grid, (config.N_LANES, config.LANE_LENGTH))
-        return np.sum(grid, axis=1)/HP_NORM
+            while not done:
+                action = self.decide_action(state, env.get_valid_actions(state))
 
-    def play(self,agent, epsilon=0):
-        """ Play one episode and collect observations and rewards """
+                reward, next_state, done = env.step(action)
+                self.step_count += 1
 
-        summary = dict()
-        summary['rewards'] = list()
-        summary['observations'] = list()
-        summary['actions'] = list()
-        observation = self._transform_observation(self.env.reset())
-        
-        t = 0
+                if (
+                    len(self.replay_memory) > self.min_replay_memory_size
+                    and self.step_count % update_main_every == 0
+                ):
+                    self.replay_memory.append((state, action, reward, next_state, done))
 
-        while(True):
-            if(self.render):
-                self.env.render()
-            action = agent.decide_action(observation, self.env.mask_available_actions(), epsilon)
-            summary['observations'].append(observation)
-            summary['actions'].append(action)
-            observation, reward, done, info = self.env.step(action)
-            observation = self._transform_observation(observation)
-            summary['rewards'].append(reward)
+                    # Sample a batch of experiences from replay memory
+                    minibatch = random.sample(self.replay_memory, self.batch_size)
+                    states, actions, rewards, next_states, dones = zip(*minibatch)
 
-            if done:
-                break
+                    # Convert to tensors
+                    states = torch.FloatTensor(np.array(states)).to(self.model.device)
+                    actions = torch.LongTensor(np.array(actions)).to(self.model.device)
+                    rewards = torch.FloatTensor(np.array(rewards)).to(self.model.device)
+                    next_states = torch.FloatTensor(np.array(next_states)).to(
+                        self.model.device
+                    )
+                    dones = torch.FloatTensor(np.array(dones)).to(self.model.device)
 
-        summary['observations'] = np.vstack(summary['observations'])
-        summary['actions'] = np.vstack(summary['actions'])
-        summary['rewards'] = np.vstack(summary['rewards'])
-        return summary
+                    # Compute current Q values
+                    current_q_values = (
+                        self.model.network(states)
+                        .gather(1, actions.unsqueeze(1))
+                        .squeeze(1)
+                    )
 
-    def get_render_info(self):
-        return self.env._scene._render_info
-    
+                    # Compute next Q values using target network
+                    next_q_values = self.target_model.network(next_states).max(1)[0]
+                    target_q_values = rewards + self.gamma * next_q_values * (1 - dones)
+
+                    # Compute loss
+                    loss = nn.MSELoss()(current_q_values, target_q_values.detach())
+
+                    # Optimize the model
+                    self.model.optimizer.zero_grad()
+                    loss.backward()
+                    self.model.optimizer.step()
+
+                    total_loss += loss.item()
+
+                state = next_state
+                self.update_epsilon()
+
+            if episode % update_target_every == 0:
+                self.target_model.load_state_dict(self.model.state_dict())
+
+            print(f"Episode {episode}/{episodes}, Total Loss: {total_loss}")
+
+        print("Training complete!")
