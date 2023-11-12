@@ -13,7 +13,7 @@ N_HIDDEN_LAYER_NODES = 106
 
 
 class QNetwork_DQN(nn.Module):
-    def __init__(self, learning_rate=1e-3, device="cpu"):
+    def __init__(self, device, learning_rate=1e-3):
         super(QNetwork_DQN, self).__init__()
         self.device = device
 
@@ -48,15 +48,18 @@ class QNetwork_DQN(nn.Module):
 class DQNAgent:
     def __init__(
         self,
+        env,
         device="cpu",
-        replay_memory_size=100_000,
-        min_replay_memory_size=10_000,
+        replay_memory_size=50_000,
+        min_replay_memory_size=1_000,
         gamma=0.99,
         start_epsilon=1.0,
         epsilon_decay=0.99975,
         min_epsilon=0.001,
-        batch_size=32,
+        batch_size=64,
     ):
+        # model params
+        self.env = env
         self.min_replay_memory_size = min_replay_memory_size
         self.gamma = gamma
         self.epsilon = start_epsilon
@@ -64,11 +67,16 @@ class DQNAgent:
         self.min_epsilon = min_epsilon
         self.batch_size = batch_size
 
+        # models and replay memory
         self.model = QNetwork_DQN(device=device)
         self.target_model = QNetwork_DQN(device=device)
         self.replay_memory = deque(maxlen=replay_memory_size)
 
+        # stats
         self.step_count = 0
+        self.recent_rewards = deque(maxlen=1000)
+        self.recent_final_rewards = deque(maxlen=1000)
+        self.recent_losses = deque(maxlen=1000)
 
     def decide_action(self, state, valid_actions):
         if np.random.rand() < self.epsilon:
@@ -89,28 +97,30 @@ class DQNAgent:
         self.epsilon = max(self.min_epsilon, self.epsilon)
 
     def train(
-        self, episodes, update_main_every=5, update_target_every=2_000, max_step=10_000
+        self, episodes, update_main_every=1, update_target_every=1, max_step=1_200
     ):
         self.model.train()  # Set the network to training mode
-        env = iz_env.IZenv(max_step=max_step)
 
         for episode in range(episodes):
-            state = env.reset()
+            state = self.env.reset()
             total_loss = 0
             done = False
 
             while not done:
-                action = self.decide_action(state, env.get_valid_actions(state))
+                action = self.decide_action(state, self.env.get_valid_actions(state))
 
-                reward, next_state, done = env.step(action)
+                reward, next_state, done = self.env.step(action)
                 self.step_count += 1
+                self.replay_memory.append((state, action, reward, next_state, done))
+
+                self.recent_rewards.append(reward)
+                if done:
+                    self.recent_final_rewards.append(reward)
 
                 if (
                     len(self.replay_memory) > self.min_replay_memory_size
                     and self.step_count % update_main_every == 0
                 ):
-                    self.replay_memory.append((state, action, reward, next_state, done))
-
                     # Sample a batch of experiences from replay memory
                     minibatch = random.sample(self.replay_memory, self.batch_size)
                     states, actions, rewards, next_states, dones = zip(*minibatch)
@@ -144,6 +154,7 @@ class DQNAgent:
                     self.model.optimizer.step()
 
                     total_loss += loss.item()
+                    self.recent_losses.append(loss.item())
 
                 state = next_state
                 self.update_epsilon()
@@ -151,6 +162,16 @@ class DQNAgent:
             if episode % update_target_every == 0:
                 self.target_model.load_state_dict(self.model.state_dict())
 
-            print(f"Episode {episode}/{episodes}, Total Loss: {total_loss}")
+            print(
+                "\rStep {:d}\t Episode {:d}/{:d} Mean rewards {:.2f}\t Mean losses {:.2f}\t Mean final rewards {:.2f}".format(
+                    self.step_count,
+                    episode,
+                    episodes,
+                    np.mean(self.recent_rewards),
+                    np.mean(self.recent_losses),
+                    np.mean(self.recent_final_rewards),
+                ),
+                end="",
+            )
 
         print("Training complete!")
