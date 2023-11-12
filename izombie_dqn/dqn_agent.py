@@ -95,7 +95,6 @@ class DQNAgent:
         env = iz_env.IZenv(max_step=max_step)
 
         for episode in range(episodes):
-            print(f"episode = {episode}")
             state = env.reset()
             total_loss = 0
             done = False
