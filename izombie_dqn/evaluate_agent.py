@@ -1,66 +1,54 @@
-from itertools import count
-import numpy as np
-import json
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import Variable
-import torch.optim as optim
-import matplotlib.pyplot as plt
 from izombie_env import config
+from izombie_env import simple_env as iz_env
+from collections import Counter
 
-# from game_render import render
 
+def evaluate_agent(agent, test_size=100):
+    agent.model.eval()
 
-def evaluate(env, agent, n_iter=1000, verbose=True):
-    sum_score = 0
-    sum_iter = 0
-    score_hist = []
-    iter_hist = []
-    n_iter = n_iter
-    actions = []
+    game_results = []
+    for _ in range(test_size):
+        env = iz_env.IZenv(fix_rand=True)
+        state = env.reset()
 
-    for episode_idx in range(n_iter):
-        if verbose:
-            print("\r{}/{}".format(episode_idx, n_iter), end="")
+        for _ in range(1000):
+            action = agent.get_best_q_action(
+                state=state, valid_actions=env.get_valid_actions()
+            )
+            _, next_state, game_status = env.step(action)
+            state = next_state
 
-        # play episodes
-        summary = env.play(agent)
-        summary["score"] = np.sum(summary["rewards"])
+            if game_status != config.GameStatus.CONTINUE:
+                game_results.append(game_status)
+                break
+    
+    status_counts = Counter(game_results)
+    total = len(game_results)
 
-        score_hist.append(summary["score"])
-        iter_hist.append(min(env.env._scene._chrono, config.MAX_FRAMES))
+    for status in config.GameStatus:
+        count = status_counts.get(status, 0)
+        percentage = (count / total) * 100 if total > 0 else 0
+        print(f"{status.name}: Count = {count}, Percentage = {percentage:.2f}%")
 
-        sum_score += summary["score"]
-        sum_iter += min(env.env._scene._chrono, config.MAX_FRAMES)
+    
 
-        # if env.env._scene._chrono >= 1000:
-        #    render_info = env.env._scene._render_info
-        #    render(render_info)
-        #    input()
-        actions.append(summary["actions"])
+def manually_test_agent(agent, env):
+    agent.model.eval()
+    state = env.reset()
 
-    actions = np.concatenate(actions)
-    plant_action = np.mod(actions - 1, 4)
-    if verbose:
-        # Plot of the score
-        plt.hist(score_hist)
-        plt.title("Score per play over {} plays".format(n_iter))
-        plt.show()
-        # Plot of the iterations
-        plt.hist(iter_hist)
-        plt.title("Survived frames per play over {} plays".format(n_iter))
-        plt.show()
-        # Plot of the action
-        plt.hist(
-            np.concatenate(actions),
-            np.arange(0, config.N_LANES * config.LANE_LENGTH * 4 + 2) - 0.5,
-            density=True,
+    env.print_human_readable_state()
+
+    for _ in range(1000):
+        action = agent.get_best_q_action(
+            state=state, valid_actions=env.get_valid_actions()
         )
-        plt.title("Action usage density over {} plays".format(n_iter))
-        plt.show()
-        plt.hist(plant_action, np.arange(0, 5) - 0.5, density=True)
-        plt.title("Plant usage density over {} plays".format(n_iter))
-        plt.show()
+        _, next_state, game_status = env.step(action)
+        print(f"ACTION: {action}")
+        env.print_human_readable_state()
+        state = next_state
 
-    return sum_score / n_iter, sum_iter / n_iter
+        if game_status != config.GameStatus.CONTINUE:
+            break
+
+        _ = input("")
+

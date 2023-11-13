@@ -4,8 +4,8 @@ import numpy as np
 from collections import deque
 import random
 
-from izombie_env import env as iz_env
 from izombie_env import config
+from .threshold import Threshold
 
 # model params
 MODEL_NAME = "136,106,76"
@@ -25,7 +25,7 @@ class QNetwork_DQN(nn.Module):
             + 1  # sun
             + 5  # brain status
         )
-        self.n_outputs = iz_env.IZenv().action_no
+        self.n_outputs = config.ACTION_NO
         self.actions = np.arange(self.n_outputs)
         self.learning_rate = learning_rate
 
@@ -53,19 +53,23 @@ class DQNAgent:
         replay_memory_size=50_000,
         min_replay_memory_size=1_000,
         gamma=0.99,
-        start_epsilon=1.0,
-        epsilon_decay=0.99975,
-        min_epsilon=0.001,
         batch_size=64,
+        epsilon_length=10_000,
+        start_epsilon=1.0,
+        epsilon_interpolation="exponential",
+        end_epsilon=0.05,
     ):
         # model params
         self.env = env
         self.min_replay_memory_size = min_replay_memory_size
         self.gamma = gamma
-        self.epsilon = start_epsilon
-        self.epsilon_decay = epsilon_decay
-        self.min_epsilon = min_epsilon
         self.batch_size = batch_size
+        self.epsilons = Threshold(
+            seq_length=epsilon_length,
+            start_epsilon=start_epsilon,
+            interpolation=epsilon_interpolation,
+            end_epsilon=end_epsilon,
+        )
 
         # models and replay memory
         self.model = QNetwork_DQN(device=device)
@@ -74,30 +78,33 @@ class DQNAgent:
 
         # stats
         self.step_count = 0
-        self.recent_rewards = deque(maxlen=1000)
-        self.recent_final_rewards = deque(maxlen=1000)
-        self.recent_losses = deque(maxlen=1000)
+        self.episode_count = 0
+        self.rewards = []
+        self.winning_suns = []
+        self.losses = []
+        self.game_results = []
+        self.steps = []
+
+    def get_epsilon(self):
+        return self.epsilons.epsilon(self.episode_count)
+
+    def get_best_q_action(self, state, valid_actions):
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.model.device)
+            q_values = self.model.network(state_tensor).detach()
+
+            valid_q_values = q_values[0, valid_actions]
+            max_q_index = torch.argmax(valid_q_values).item()
+            return valid_actions[max_q_index]
 
     def decide_action(self, state, valid_actions):
-        if np.random.rand() < self.epsilon:
+        if np.random.rand() < self.get_epsilon():
             return np.random.choice(valid_actions)
         else:
-            with torch.no_grad():
-                state_tensor = (
-                    torch.FloatTensor(state).unsqueeze(0).to(self.model.device)
-                )
-                q_values = self.model.network(state_tensor).detach()
-
-                valid_q_values = q_values[0, valid_actions]
-                max_q_index = torch.argmax(valid_q_values).item()
-                return valid_actions[max_q_index]
-
-    def update_epsilon(self):
-        self.epsilon *= self.epsilon_decay
-        self.epsilon = max(self.min_epsilon, self.epsilon)
+            return self.get_best_q_action(state, valid_actions)
 
     def train(
-        self, episodes, update_main_every=1, update_target_every=1, max_step=1_200
+        self, episodes, update_main_every=1, update_target_every=1, stats_window=100
     ):
         self.model.train()  # Set the network to training mode
 
@@ -107,15 +114,20 @@ class DQNAgent:
             done = False
 
             while not done:
-                action = self.decide_action(state, self.env.get_valid_actions(state))
+                action = self.decide_action(
+                    state=state, valid_actions=self.env.get_valid_actions()
+                )
 
-                reward, next_state, done = self.env.step(action)
+                reward, next_state, game_status = self.env.step(action)
+                done = game_status != config.GameStatus.CONTINUE
                 self.step_count += 1
                 self.replay_memory.append((state, action, reward, next_state, done))
 
-                self.recent_rewards.append(reward)
+                self.rewards.append(reward)
                 if done:
-                    self.recent_final_rewards.append(reward)
+                    self.game_results.append(game_status)
+                    if game_status == config.GameStatus.WIN:
+                        self.winning_suns.append(self.env._get_sun())
 
                 if (
                     len(self.replay_memory) > self.min_replay_memory_size
@@ -154,24 +166,40 @@ class DQNAgent:
                     self.model.optimizer.step()
 
                     total_loss += loss.item()
-                    self.recent_losses.append(loss.item())
+                    self.losses.append(loss.item())
+
+                if self.step_count % update_target_every == 0:
+                    self.target_model.load_state_dict(self.model.state_dict())
 
                 state = next_state
-                self.update_epsilon()
 
-            if episode % update_target_every == 0:
-                self.target_model.load_state_dict(self.model.state_dict())
+            self.steps.append(self.env._step_count)
 
+            self.episode_count += 1
+
+            if self.episode_count % 100 == 0:
+                print()
+            game_results_effective_len = min(stats_window, len(self.game_results))
             print(
-                "\rStep {:d}\t Episode {:d}/{:d} Mean rewards {:.2f}\t Mean losses {:.2f}\t Mean final rewards {:.2f}".format(
-                    self.step_count,
+                "\rEp {:d}/{:d}\t ε {:.2f}\t Mean rewards {:.2f}\t Mean losses {:.2f}\t Mean winning sun {:.2f} Mean steps {:.2f} Win {:.2f}%".format(
                     episode,
                     episodes,
-                    np.mean(self.recent_rewards),
-                    np.mean(self.recent_losses),
-                    np.mean(self.recent_final_rewards),
+                    self.get_epsilon(),
+                    np.mean(self.rewards[-stats_window:]),
+                    np.mean(self.losses[-stats_window:]),
+                    np.mean(self.winning_suns[-stats_window:]),
+                    np.mean(self.steps[-stats_window:]),
+                    sum(
+                        1
+                        for res in self.game_results[-stats_window:]
+                        if res == config.GameStatus.WIN
+                    )
+                    * 100
+                    / game_results_effective_len,
                 ),
                 end="",
             )
 
-        print("Training complete!")
+        model_save_dir = f"{MODEL_NAME}.pth"
+        print(f"Training complete! Model has been saved to {model_save_dir}.")
+        torch.save(self.model.state_dict(), model_save_dir)
