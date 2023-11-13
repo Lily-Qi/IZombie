@@ -1,6 +1,5 @@
 import numpy as np
 import ujson as json
-import math
 from pvzemu import World, SceneType, ZombieType, PlantType
 from .config import *
 
@@ -18,21 +17,19 @@ zombie_deck = [
     [ZombieType.football, 175],
 ]
 
-# SUN_VALUE = 1
-# BRAIN_VALUE = (9 * SUN_VALUE * 200) / 5
-# WIN_VALUE = 5 * BRAIN_VALUE
-# LOSE_VALUE = -5 * BRAIN_VALUE
+BRAIN_VALUE = 100
+LOSE_VALUE = -10 * BRAIN_VALUE
 EAT_BRAIN_X_THRES = 25
 
 
 class IZenv:
-    def __init__(self, max_step=None, fix_rand=False):
-        self._max_step = max_step
-        self._fix_rand = fix_rand
-        self.reset()
+    def __init__(self, step_length=50, max_step=None, fix_rand=False):
+        self.step_length = step_length
+        self.max_step = max_step
+        self.fix_rand = fix_rand
 
     def reset(self):
-        self._step_count = 0
+        self.step_count = 0
         self._brain_status = np.array([1, 1, 1, 1, 1])
 
         self.world = World(SceneType.night)
@@ -42,48 +39,43 @@ class IZenv:
         plant_list = [
             plant for plant, count in plant_counts.items() for _ in range(count)
         ]
-        if self._fix_rand:
+        if self.fix_rand:
             np.random.seed(0)
         np.random.shuffle(plant_list)
         for index, plant in enumerate(plant_list):
-            x = index // P_LANE_LENGTH  # Row index
-            y = index % P_LANE_LENGTH  # Column index
-            self.world.plant_factory.create(plant, x, y)
+            self.world.plant_factory.create(
+                plant, index // P_LANE_LENGTH, index % P_LANE_LENGTH
+            )
 
         self._sync_with_world()
         return self.state
 
     def _get_game_status(self):
-        if self._max_step is not None and self._step_count >= self._max_step:
+        if self.max_step is not None and self.step_count >= self.max_step:
             return GameStatus.TIMEUP
-        elif self._get_brain_num() == 0:
+        if self._get_brain_num() == 0:
             return GameStatus.WIN
-        else:
-            if self._get_sun() < 50 and self._get_zombie_num() == 0:
-                return GameStatus.LOSE
-            else:
-                return GameStatus.CONTINUE
+        if self.get_sun() < 50 and self._get_zombie_num() == 0:
+            return GameStatus.LOSE
+        return GameStatus.CONTINUE
 
     def _get_reward(self, prev_sun, prev_brain_num, game_status):
-        reward = self._get_sun() - prev_sun
+        reward = self.get_sun() - prev_sun
+        reward += BRAIN_VALUE * (self._get_brain_num() - prev_brain_num)
         if game_status == GameStatus.LOSE:
-            reward = -self._get_sun()
-        # reward = SUN_VALUE * (self._get_sun() - prev_sun)
-        # reward += BRAIN_VALUE * (self._get_brain_num() - prev_brain_num)
-        # if game_status == GameStatus.LOSE:
-        #     reward += LOSE_VALUE
-        # elif game_status == GameStatus.WIN:
-        #     reward += WIN_VALUE
+            reward += LOSE_VALUE
+        elif game_status == GameStatus.WIN:
+            reward += self.get_sun()
         return reward
 
     def step(self, action):
-        self._step_count += 1
+        self.step_count += 1
         self._sync_with_world()
-        prev_sun = self._get_sun()
+        prev_sun = self.get_sun()
         prev_brain_num = self._get_brain_num()
 
         self._take_action(action)
-        for _ in range(50):
+        for _ in range(self.step_length):
             self.world.update()
         self._sync_with_world()
 
@@ -108,11 +100,15 @@ class IZenv:
             mask[6:11] = True
         if sun >= 175:
             mask[11:16] = True
+        for row in range(5):
+            if self._brain_status[row] == 0:
+                for i in range(3):
+                    mask[i * 5 + row + 1] = False
         return mask
 
     def print_human_readable_state(self):
         print(
-            f"Step: {self._step_count} Sun: {self._get_sun()} Brains: {self._get_brain_num()} Game status: {self._get_game_status().name} "
+            f"Step: {self.step_count} Sun: {self.get_sun()} Brains: {self._get_brain_num()} Game status: {self._get_game_status().name} "
         )
         state = self.state
 
@@ -157,7 +153,7 @@ class IZenv:
         plant_type_nums = np.zeros(N_LANES * P_LANE_LENGTH, dtype=float)
         zombie_hps = np.zeros(N_LANES * LANE_LENGTH, dtype=float)
         zombie_type_nums = np.zeros(N_LANES * LANE_LENGTH, dtype=float)
-        sun = np.array([self._get_sun() / SUN_MAX])
+        sun = np.array([self.get_sun() / SUN_MAX])
 
         for plant in self._data["plants"]:
             if plant["status"] == "squash_crushed":
@@ -201,7 +197,7 @@ class IZenv:
             z_idx = action // N_LANES
             row = action % N_LANES
             col = 4
-            sun = self._get_sun() - zombie_deck[z_idx][1]
+            sun = self.get_sun() - zombie_deck[z_idx][1]
             assert sun >= 0
             self.world.zombie_factory.create(zombie_deck[z_idx][0], row, col)
             self.world.scene.set_sun(sun)
@@ -214,7 +210,7 @@ class IZenv:
             col = LANE_LENGTH - 1
         return col
 
-    def _get_sun(self):
+    def get_sun(self):
         return self._data["sun"]["sun"]
 
     def _get_brain_num(self):
@@ -237,11 +233,11 @@ class IZenv:
     def _plant_type_to_plant_num(self, plant_type):
         if plant_type == "sunflower":
             return 1
-        elif plant_type == "pea_shooter":
+        if plant_type == "pea_shooter":
             return 2
-        elif plant_type == "squash":
+        if plant_type == "squash":
             return 3
-        elif plant_type == "snow_pea":
+        if plant_type == "snow_pea":
             return 4
         return 0
 
@@ -257,8 +253,8 @@ class IZenv:
     def _zombie_type_to_zombie_num(self, zombie_type):
         if zombie_type == "zombie":
             return 1
-        elif zombie_type == "buckethead":
+        if zombie_type == "buckethead":
             return 2
-        elif zombie_type == "football":
+        if zombie_type == "football":
             return 3
         return 0
