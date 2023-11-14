@@ -2,6 +2,7 @@ from collections import deque
 import random
 from copy import deepcopy
 import os
+import datetime
 
 from torch import nn
 import torch
@@ -13,8 +14,8 @@ from .threshold import Threshold
 from .evaluate_agent import evaluate_agent
 
 # model params
-MODEL_NAME = "136,106,76"
-N_HIDDEN_LAYER_NODES = 106
+N_HIDDEN_LAYER_NODES = 84
+MODEL_NAME = f"{config.STATE_SIZE},{N_HIDDEN_LAYER_NODES},{config.ACTION_SIZE}"
 
 
 class DQNNetwork(nn.Module):
@@ -22,20 +23,11 @@ class DQNNetwork(nn.Module):
         super(DQNNetwork, self).__init__()
         self.device = device
 
-        self.n_inputs = (
-            config.N_LANES * config.P_LANE_LENGTH  # plant hp
-            + config.N_LANES * config.P_LANE_LENGTH  # plant type
-            + config.N_LANES * config.LANE_LENGTH  # zombie hp
-            + config.N_LANES * config.LANE_LENGTH  # zombie type
-            + 1  # sun
-            + 5  # brain status
-        )
-
         # Set up network
         self.network = nn.Sequential(
-            nn.Linear(self.n_inputs, N_HIDDEN_LAYER_NODES, bias=True),
+            nn.Linear(config.STATE_SIZE, N_HIDDEN_LAYER_NODES, bias=True),
             nn.LeakyReLU(),
-            nn.Linear(N_HIDDEN_LAYER_NODES, config.ACTION_NO, bias=True),
+            nn.Linear(N_HIDDEN_LAYER_NODES, config.ACTION_SIZE, bias=True),
         )
 
         # Set to GPU if cuda is specified
@@ -72,6 +64,7 @@ class DQNAgent:
         epsilon_interpolation="exponential",
         end_epsilon=0.05,
     ):
+        print(f"Using {device} device.")
         self.model_name = model_name
         self.model = DQNNetwork(device=device, learning_rate=learning_rate)
         self.target_model = deepcopy(self.model)
@@ -201,27 +194,28 @@ class DQNAgent:
         self.model.eval()
         self.target_model.eval()
 
-    def take_step(self, state):
-        action = self.decide_action(state, self.env.get_valid_actions())
+    def take_step(self, state, mask):
+        action = self.decide_action(state, self.env.get_valid_actions(mask))
 
-        reward, next_state, game_status = self.env.step(action)
+        reward, next_state, next_mask, game_status = self.env.step(action)
         done = game_status != config.GameStatus.CONTINUE
         self.step_count += 1
-        self.replay_memory.append((state, action, reward, next_state, done))
+        self.replay_memory.append((state, action, reward, next_state, next_mask, done))
 
         self.rewards.append(reward)
-        return next_state, game_status, done
+        return next_state, next_mask, game_status, done
 
     def update_main_model(self):
         # Sample a batch of experiences from replay memory
         minibatch = random.sample(self.replay_memory, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*minibatch)
+        states, actions, rewards, next_states, next_masks, dones = zip(*minibatch)
 
         # Convert to tensors
         states = torch.FloatTensor(np.array(states)).to(self.model.device)
         actions = torch.LongTensor(np.array(actions)).to(self.model.device)
         rewards = torch.FloatTensor(np.array(rewards)).to(self.model.device)
         next_states = torch.FloatTensor(np.array(next_states)).to(self.model.device)
+        next_masks = torch.FloatTensor(np.array(next_masks)).to(self.model.device)
         dones = torch.FloatTensor(np.array(dones)).to(self.model.device)
 
         # Compute current Q values
@@ -230,7 +224,10 @@ class DQNAgent:
         )
 
         # Compute next Q values using target network
-        next_q_values = self.target_model.network(next_states).max(1)[0]
+        with torch.no_grad():
+            masked_next_q_values = self.target_model.network(next_states) * next_masks
+        masked_next_q_values[masked_next_q_values == 0] = -1e9
+        next_q_values = masked_next_q_values.max(1)[0]
         target_q_values = rewards + self.discount * next_q_values * (1 - dones)
 
         # Compute loss
@@ -249,17 +246,19 @@ class DQNAgent:
         update_main_every_n_steps=32,
         update_target_every_n_steps=2000,
         eval_every_n_episodes=500,
+        eval_max_step=500,
         stats_window=1000,
     ):
         self.set_to_trainig_mode()
         prev_ep_count = self.episode_count
 
         for episode in range(episodes):
-            state = self.env.reset()
+            self.env.reset()
+            state, mask = self.env.get_state_and_mask()
             done = False
 
             while not done:
-                next_state, game_status, done = self.take_step(state)
+                next_state, next_mask, game_status, done = self.take_step(state, mask)
 
                 if done:
                     self.game_results.append(game_status)
@@ -275,38 +274,37 @@ class DQNAgent:
                 if self.step_count % update_target_every_n_steps == 0:
                     self.target_model.load_state_dict(self.model.state_dict())
 
-                state = next_state
+                state, mask = next_state, next_mask
 
             self.steps.append(self.env.step_count)
 
             self.episode_count += 1
 
-            if self.episode_count % eval_every_n_episodes == 0:
-                evaluate_agent(self)
-
             if self.episode_count % 100 == 0:
-                print()
-            win_rate = (
-                sum(
-                    1
-                    for res in self.game_results[-stats_window:]
-                    if res == config.GameStatus.WIN
+                win_rate = (
+                    sum(
+                        1
+                        for res in self.game_results[-stats_window:]
+                        if res == config.GameStatus.WIN
+                    )
+                    * 100
+                    / min(stats_window, len(self.game_results))
                 )
-                * 100
-                / min(stats_window, len(self.game_results))
-            )
-            print(
-                f"\rEp {prev_ep_count + episode}/{prev_ep_count + episodes} "
-                f"ε {self.get_epsilon():.2f} "
-                f"Mean losses {np.mean(self.losses[-stats_window:]):.2f} "
-                f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
-                f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
-                f" Win {win_rate:.2f}%",
-                end="",
-            )
+                print(
+                    f"Ep {prev_ep_count + episode + 1}/{prev_ep_count + episodes} "
+                    f"ε {self.get_epsilon():.2f} "
+                    f"Mean losses {np.mean(self.losses[-stats_window:]):.2f} "
+                    f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
+                    f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
+                    f" Win {win_rate:.2f}%"
+                )
 
+            if self.episode_count % eval_every_n_episodes == 0:
+                evaluate_agent(self, max_step=eval_max_step)
+
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         create_folder_if_not_exist("model")
-        filename = f"model/{self.model_name}.pth"
+        filename = f"model/{self.model_name}_{self.episode_count}_{current_time}.pth"
         self.save_checkpoint(filename)
         print(f"Training complete! Model has been saved to {filename}.")
 
