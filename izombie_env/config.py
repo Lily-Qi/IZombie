@@ -19,4 +19,13 @@ Z_MAX_HP = 80 * 20
 SUN_MAX = 1950
 ZOMBIE_TYPE_START = 85
 ZOMBIE_TYPE_END = 128
-ACTION_NO = N_ZOMBIE_TYPE * N_LANES + 1
+
+ACTION_SIZE = N_ZOMBIE_TYPE * N_LANES + 1
+STATE_SIZE = (
+    N_LANES * P_LANE_LENGTH  # plant hp
+    + N_LANES * P_LANE_LENGTH  # plant type
+    + N_LANES * LANE_LENGTH  # zombie hp
+    + N_LANES * LANE_LENGTH  # zombie type
+    + 1  # sun
+    + 5  # brain status
+)
