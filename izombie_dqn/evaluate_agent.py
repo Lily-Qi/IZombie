@@ -1,22 +1,21 @@
 from collections import Counter
 import numpy as np
-import os
 
-from izombie_env import config
-from izombie_env import simple_env as iz_env
+from izombie_env2.config import GameStatus
+from izombie_env2.env import IZenv
 
 
-def evaluate_agent(agent, max_step=None, test_size=10):
+def evaluate_agent(
+    agent, max_step=100_000, test_size=500, episode_count=None, output_file=None
+):
     agent.set_to_eval_mode()
-    if max_step is None:
-        max_step = agent.env.max_step
     game_results = []
     steps = []
     winning_suns = []
 
     for test_idx in range(test_size):
         print(f"\rTesting {test_idx}/{test_size}...", end="")
-        env = iz_env.IZenv(max_step=max_step)
+        env = IZenv(max_step=max_step)
         state, mask = env.get_state_and_mask()
 
         for step in range(max_step + 1):
@@ -24,25 +23,34 @@ def evaluate_agent(agent, max_step=None, test_size=10):
             _, next_state, next_mask, game_status = env.step(action)
             state, mask = next_state, next_mask
 
-            if game_status != config.GameStatus.CONTINUE:
+            if game_status != GameStatus.CONTINUE:
                 game_results.append(game_status)
                 steps.append(step)
-                if game_status == config.GameStatus.WIN:
+                if game_status == GameStatus.WIN:
                     winning_suns.append(env.get_sun())
                 break
 
-    status_counts = Counter(game_results)
+    results_counter = Counter(game_results)
     total = len(game_results)
 
-    print(f"\nMax step: {max_step}")
-    for status in config.GameStatus:
-        count = status_counts.get(status, 0)
+    out = ""
+    if episode_count is not None:
+        out += f"Episode: {episode_count}\n"
+    out += f"Max step: {max_step}\n"
+    for status in GameStatus:
+        count = results_counter.get(status, 0)
         if count != 0:
             percentage = (count / total) * 100 if total > 0 else 0
-            print(f"{status.name}: {count}/{total} ({percentage:.2f}%)")
-    print(f"Mean steps: {np.mean(steps)}")
+            out += f"{status.name}: {count}/{total} ({percentage:.2f}%)\n"
+    out += f"Mean steps: {np.mean(steps):.2f}\n"
     if (len(winning_suns)) > 0:
-        print(f"Mean winning suns: {np.mean(winning_suns)}")
+        out += f"Mean winning suns: {np.mean(winning_suns):.2f}\n"
+
+    if output_file is None:
+        print(f"\n{out}", end="", flush=True)
+    else:
+        with open(output_file, "a", encoding="utf-8") as f:
+            f.write(f"{out}\n")
 
     agent.set_to_trainig_mode()
 
@@ -50,7 +58,7 @@ def evaluate_agent(agent, max_step=None, test_size=10):
 def manually_test_agent(agent):
     agent.set_to_eval_mode()
 
-    env = iz_env.IZenv(fix_rand=True)
+    env = IZenv(fix_rand=True)
     state, mask = env.get_state_and_mask()
     last_step = 0
 
@@ -58,7 +66,7 @@ def manually_test_agent(agent):
         action = agent.get_best_q_action(state, env.get_valid_actions(mask))
         reward, next_state, next_mask, game_status = env.step(action)
 
-        if action != 0 or game_status != config.GameStatus.CONTINUE:
+        if action != 0 or game_status != GameStatus.CONTINUE:
             env.print_human_readable_state(
                 highlight=((action - 1) % 5, 4) if action != 0 else None
             )
@@ -68,7 +76,7 @@ def manually_test_agent(agent):
 
         state, mask = next_state, next_mask
 
-        if game_status != config.GameStatus.CONTINUE:
+        if game_status != GameStatus.CONTINUE:
             break
 
     agent.set_to_trainig_mode()

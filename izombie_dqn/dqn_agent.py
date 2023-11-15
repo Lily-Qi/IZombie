@@ -3,18 +3,26 @@ import random
 from copy import deepcopy
 import os
 import datetime
+import zipfile
+
+# for profiling
+from io import StringIO
+import cProfile
+import pstats
+import functools
 
 from torch import nn
 import torch
 import numpy as np
 
-from izombie_env import config
-from izombie_env.simple_env import IZenv
+from izombie_env2 import config
+from izombie_env2.env import IZenv
 from .threshold import Threshold
 from .evaluate_agent import evaluate_agent
 
 # model params
-N_HIDDEN_LAYER_NODES = 84
+N_HIDDEN_LAYER_NODES = 100
+MODEL_FOLDER = "model"
 MODEL_NAME = f"{config.STATE_SIZE},{N_HIDDEN_LAYER_NODES},{config.ACTION_SIZE}"
 
 
@@ -43,6 +51,22 @@ class DQNNetwork(nn.Module):
         return self.network(x)
 
 
+def profiled(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        profiler = cProfile.Profile()
+        profiler.enable()
+        result = func(*args, **kwargs)
+        profiler.disable()
+        s = StringIO()
+        ps = pstats.Stats(profiler, stream=s).sort_stats("cumulative")
+        ps.print_stats()
+        print(s.getvalue())
+        return result
+
+    return wrapper
+
+
 class DQNAgent:
     def __init__(
         self,
@@ -65,7 +89,7 @@ class DQNAgent:
         end_epsilon=0.05,
     ):
         print(f"Using {device} device.")
-        self.model_name = model_name
+        self.model_name = f"{model_name}_{get_timestamp()}"
         self.model = DQNNetwork(device=device, learning_rate=learning_rate)
         self.target_model = deepcopy(self.model)
 
@@ -94,6 +118,7 @@ class DQNAgent:
             {
                 "step_count": 0,
                 "episode_count": 0,
+                "epsilon_index": 0,
                 "rewards": [],
                 "winning_suns": [],
                 "losses": [],
@@ -133,6 +158,9 @@ class DQNAgent:
     def load_stats(self, checkpoint):
         self.step_count = checkpoint["step_count"]
         self.episode_count = checkpoint["episode_count"]
+        self.epsilon_index = (
+            checkpoint["epsilon_index"] if "epsilon_index" in checkpoint else 0
+        )
         self.rewards = checkpoint["rewards"]
         self.winning_suns = checkpoint["winning_suns"]
         self.losses = checkpoint["losses"]
@@ -145,6 +173,17 @@ class DQNAgent:
         self.load_env(checkpoint)
         self.load_hyperparams(checkpoint)
         self.load_stats(checkpoint)
+
+    def load_checkpoint_new(self, filename):
+        with zipfile.ZipFile(filename, "r") as zipf:
+            zipf.extractall(os.path.dirname(filename))
+        filename = filename[:-4]
+        checkpoint = torch.load(filename)
+        self.load_model(checkpoint)
+        self.load_env(checkpoint)
+        self.load_hyperparams(checkpoint)
+        self.load_stats(checkpoint)
+        os.remove(filename)
 
     def save_checkpoint(self, filename):
         checkpoint = {
@@ -169,9 +208,24 @@ class DQNAgent:
             "steps": self.steps,
         }
         torch.save(checkpoint, filename)
+        with zipfile.ZipFile(f"{filename}.zip", "w", zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(filename)
+        os.remove(filename)
+
+    def reset_epsilon(
+        self, epsilon_length, start_epsilon, epsilon_interpolation, end_epsilon
+    ):
+        # pylint: disable=W0201
+        self.epsilons = Threshold(
+            seq_length=epsilon_length,
+            start_epsilon=start_epsilon,
+            interpolation=epsilon_interpolation,
+            end_epsilon=end_epsilon,
+        )
+        self.epsilon_index = 0
 
     def get_epsilon(self):
-        return self.epsilons.epsilon(self.episode_count)
+        return self.epsilons.epsilon(self.epsilon_index)
 
     def get_best_q_action(self, state, valid_actions):
         with torch.no_grad():
@@ -240,18 +294,22 @@ class DQNAgent:
 
         self.losses.append(loss.item())
 
+    def sync_target_model_with_main(self):
+        self.target_model.load_state_dict(self.model.state_dict())
+
     def train(
         self,
         episodes,
         update_main_every_n_steps=32,
         update_target_every_n_steps=2000,
-        eval_every_n_episodes=500,
-        eval_max_step=500,
+        save_checkpoint_every_n_episodes=1000,
+        evaluate_test_size=300,
         stats_window=1000,
     ):
         self.set_to_trainig_mode()
-        prev_ep_count = self.episode_count
+        prev_episode_count = self.episode_count
 
+        start_time = datetime.datetime.now()
         for episode in range(episodes):
             self.env.reset()
             state, mask = self.env.get_state_and_mask()
@@ -262,6 +320,7 @@ class DQNAgent:
 
                 if done:
                     self.game_results.append(game_status)
+                    self.steps.append(self.env.step_count)
                     if game_status == config.GameStatus.WIN:
                         self.winning_suns.append(self.env.get_sun())
 
@@ -272,41 +331,66 @@ class DQNAgent:
                     self.update_main_model()
 
                 if self.step_count % update_target_every_n_steps == 0:
-                    self.target_model.load_state_dict(self.model.state_dict())
+                    self.sync_target_model_with_main()
 
                 state, mask = next_state, next_mask
-
-            self.steps.append(self.env.step_count)
 
             self.episode_count += 1
 
             if self.episode_count % 100 == 0:
-                win_rate = (
-                    sum(
-                        1
-                        for res in self.game_results[-stats_window:]
-                        if res == config.GameStatus.WIN
-                    )
-                    * 100
-                    / min(stats_window, len(self.game_results))
+                self.print_stats(
+                    stats_window,
+                    prev_episode_count + episode + 1,
+                    prev_episode_count + episodes,
+                    start_time,
                 )
-                print(
-                    f"Ep {prev_ep_count + episode + 1}/{prev_ep_count + episodes} "
-                    f"ε {self.get_epsilon():.2f} "
-                    f"Mean losses {np.mean(self.losses[-stats_window:]):.2f} "
-                    f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
-                    f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
-                    f" Win {win_rate:.2f}%"
+                start_time = datetime.datetime.now()
+
+            if (
+                self.episode_count % save_checkpoint_every_n_episodes == 0
+                or episode == episodes - 1
+            ):
+                create_folder_if_not_exist(self.get_model_folder())
+                evaluate_agent(
+                    self,
+                    test_size=evaluate_test_size,
+                    episode_count=self.episode_count,
+                    output_file=f"{self.get_model_folder()}/eval.txt",
                 )
+                filename = f"{self.get_model_folder()}/model_{self.episode_count}.pth"
+                self.save_checkpoint(filename)
+                print(f"Checkpoint has been saved to {filename}.")
 
-            if self.episode_count % eval_every_n_episodes == 0:
-                evaluate_agent(self, max_step=eval_max_step)
+            self.epsilon_index += 1
+            if self.epsilon_index >= self.epsilons.seq_length:
+                self.epsilon_index -= self.epsilons.seq_length
 
-        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        create_folder_if_not_exist("model")
-        filename = f"model/{self.model_name}_{self.episode_count}_{current_time}.pth"
-        self.save_checkpoint(filename)
-        print(f"Training complete! Model has been saved to {filename}.")
+    train_with_profiler = profiled(train)
+
+    def print_stats(
+        self, stats_window, curr_episode_count, total_episode_count, start_time
+    ):
+        win_rate = (
+            sum(
+                1
+                for res in self.game_results[-stats_window:]
+                if res == config.GameStatus.WIN
+            )
+            * 100
+            / min(stats_window, len(self.game_results))
+        )
+        print(
+            f"Ep {curr_episode_count}/{total_episode_count} "
+            f"ε {self.get_epsilon():.2f} "
+            f"Mean losses {np.mean(self.losses[-stats_window:]):.2f} "
+            f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
+            f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
+            f"Win {win_rate:.2f}% "
+            f"({(datetime.datetime.now() - start_time).total_seconds():.2f}s)"
+        )
+
+    def get_model_folder(self):
+        return f"{MODEL_FOLDER}/{self.model_name}"
 
 
 def create_folder_if_not_exist(folder_name):
@@ -314,3 +398,7 @@ def create_folder_if_not_exist(folder_name):
     folder_path = os.path.join(current_directory, folder_name)
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
+
+
+def get_timestamp():
+    return datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")

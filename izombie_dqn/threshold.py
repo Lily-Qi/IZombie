@@ -165,5 +165,6 @@ class Threshold:
         """Check whether index is in sequence."""
         if index >= self.seq_length:
             warnings.warn(
-                "threshold.epsilon(index): index > seq_length. There might be some unintended results."
+                f"threshold.epsilon(index): index {index} > seq_length {self.seq_length}."
+                f"Changing index to {index - self.seq_length}."
             )
