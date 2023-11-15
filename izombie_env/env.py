@@ -19,11 +19,13 @@ zombie_deck = [
 
 
 class IZenv:
-    def __init__(self, max_step=1000):
+    def __init__(self, max_step=1_200, disable_col_6_to_9=False):
         self.action_no = N_ZOMBIE_TYPE * N_LANES * Z_LANE_LENGTH + 1
         self.reset()
         self._max_step = max_step
         self._step_count = 0
+        self._brain_status = np.array([1, 1, 1, 1, 1])
+        self._disable_col_6_to_9 = disable_col_6_to_9
 
     def reset(self):
         self.world = World(SceneType.night)
@@ -40,11 +42,14 @@ class IZenv:
             self.world.plant_factory.create(plant, x, y)
         self._data = json.loads(self.world.get_json())
         self._step_count = 0
+        self._brain_status = np.array([1, 1, 1, 1, 1])
         return self.get_state()
 
     def step(self, action):
         self._step_count += 1
         self._data = json.loads(self.world.get_json())
+        prev_sun = self._get_sun()
+        prev_brain_num = self._get_brain_num()
 
         self._take_action(action)
         for _ in range(50):
@@ -54,7 +59,11 @@ class IZenv:
 
         state = self.get_state()
         # print(state)
-        reward = 0 if self._has_lost(state) else self._get_reward()
+        reward = self._get_sun() - prev_sun
+        if (self._has_lost(state)):
+            reward = -500
+        if (self._has_won(state)):
+            reward += 500
         is_done = (
             self._has_lost(state)
             or self._has_won(state)
@@ -82,73 +91,71 @@ class IZenv:
 
     def get_state(self):
         # Each plant HP, intialize to 0 to indicate if there is no plant
-        plantHPArray = np.zeros(N_LANES * P_LANE_LENGTH, dtype=float)
-        # Each plant type, intialize to -1 to indicate if there is no plant
-        plantTypeArray = np.full(N_LANES * P_LANE_LENGTH, -1, dtype=int)
+        plant_hps = np.zeros(N_LANES * P_LANE_LENGTH, dtype=float)
+        # Each plant type, intialize to 0 to indicate if there is no plant
+        plant_types = np.zeros(N_LANES * P_LANE_LENGTH, dtype=int)
         # Each zombie HP, intialize to 0 to indicate if there is no zombie
-        zombieHPArray = np.zeros(N_LANES * LANE_LENGTH, dtype=float)
-        # Each zombie type, intialize to -1 to indicate if there is no zombie
-        zombieTypeArray = np.full(N_LANES * LANE_LENGTH, -1, dtype=int)
+        zombie_hps = np.zeros(N_LANES * LANE_LENGTH, dtype=float)
+        # Each zombie type, intialize to 0 to indicate if there is no zombie
+        zombie_types = np.zeros(N_LANES * LANE_LENGTH, dtype=int)
         # Total sun
-        sunNum = np.array([self._get_sun() / SUN_MAX])
-        # Each brain status
-        brainStatusArray = np.array([1, 1, 1, 1, 1])
+        sun = np.array([self._get_sun() / SUN_MAX])
 
         for plant in self._data["plants"]:
-            plantHPArray[plant["row"] * P_LANE_LENGTH + plant["col"]] = (
+            plant_hps[plant["row"] * P_LANE_LENGTH + plant["col"]] = (
                 plant["hp"] / P_MAX_HP
             )
 
             # Assign plant type depending on the plant type
-            plantType = 0
+            plant_type = 0
             if plant["type"] == "sunflower":
-                plantType = 0
+                plant_type = 1
             elif plant["type"] == "pea_shooter":
-                plantType = 1
+                plant_type = 2
             elif plant["type"] == "squash":
-                plantType = 2
+                plant_type = 3
             elif plant["type"] == "snow_pea":
-                plantType = 3
+                plant_type = 4
 
-            plantTypeArray[plant["row"] * P_LANE_LENGTH + plant["col"]] = plantType
+            plant_types[plant["row"] * P_LANE_LENGTH + plant["col"]] = plant_type / N_PLANT_TYPE
 
         for zombie in self._data["zombies"]:
             # Update brain status for each row
             if zombie["x"] < 25:
-                brainStatusArray[zombie["row"]] = 0
+                self._brain_status[zombie["row"]] = 0
 
             # Calcullate zombie total HP and assign type depending on the zombie type
-            zombieHP = 0
-            zombieType = 0
+            zombie_hp = 0
+            zombie_type = 0
             if zombie["type"] == "zombie":
-                zombieType = 0
-                zombieHP = zombie["hp"]
+                zombie_type = 1
+                zombie_hp = zombie["hp"] * 0.66
             elif zombie["type"] == "buckethead":
-                zombieType = 1
-                zombieHP = zombie["hp"] + zombie["accessory_1"]["hp"]
+                zombie_type = 2
+                zombie_hp = zombie["hp"] * 0.66 + zombie["accessory_1"]["hp"]
             elif zombie["type"] == "football":
-                zombieType = 2
-                zombieHP = zombie["hp"] + zombie["accessory_1"]["hp"]
+                zombie_type = 3
+                zombie_hp = zombie["hp"] * 0.66 + zombie["accessory_1"]["hp"]
 
-            zombieHPArray[
+            zombie_hps[
                 zombie["row"] * LANE_LENGTH + self._zombie_x_to_col(zombie["x"])
-            ] += (zombieHP / Z_MAX_HP)
-            zombieTypeArray[
+            ] += (zombie_hp / Z_MAX_HP)
+            zombie_types[
                 zombie["row"] * LANE_LENGTH + self._zombie_x_to_col(zombie["x"])
-            ] = zombieType
+            ] = zombie_type / N_ZOMBIE_TYPE
 
         return np.concatenate(
             [
-                plantHPArray,
-                plantTypeArray,
-                zombieHPArray,
-                zombieTypeArray,
-                sunNum,
-                brainStatusArray,
+                plant_hps,
+                plant_types,
+                zombie_hps,
+                zombie_types,
+                sun,
+                self._brain_status,
             ]
         )
 
-    def get_valid_actions(self, satate):
+    def get_valid_actions(self, state):
         # Example return:
         # [ 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
         # 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48
@@ -160,7 +167,7 @@ class IZenv:
         # [ 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
         # 24 25]
         actions = np.arange(self.action_no)
-        masks = self.get_action_mask(satate)
+        masks = self.get_action_mask(state)
         return actions[masks]
 
     def get_action_mask(self, state):
@@ -175,6 +182,10 @@ class IZenv:
             mask[26:51] = True
         if sun >= 175:
             mask[51:] = True
+        if self._disable_col_6_to_9:
+            for i in range(1, 76):
+                if i % 5 != 1:
+                    mask[i] = False
         return mask
 
     def _zombie_x_to_col(self, x):
@@ -183,6 +194,9 @@ class IZenv:
 
     def _get_sun(self):
         return self._data["sun"]["sun"]
+    
+    def _get_brain_num(self):
+        return np.count_nonzero(self._brain_status == 0)
 
     def _get_reward(self):
         sun = self._get_sun()
@@ -194,6 +208,9 @@ class IZenv:
         return zombieNum
 
     def _has_lost(self, state):
+        if self._has_won(state):
+            return False
+        
         sun = self._get_sun()
         zombieNum = self._get_zombie_num(state)
 
