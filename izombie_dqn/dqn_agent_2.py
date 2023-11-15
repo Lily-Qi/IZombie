@@ -128,9 +128,7 @@ class DQNAgent:
         self.s_0 = s_1.copy()
         if done:
             if mode != "explore":  # We document the end of the play
-                self.training_iterations.append(
-                    min(400, self.env._step_count)
-                )
+                self.training_iterations.append(min(400, self.env._step_count))
             self.s_0 = self._transform_observation(self.env.reset())
         return done
 
@@ -177,8 +175,11 @@ class DQNAgent:
                     mean_iteration = np.mean(self.training_iterations[-self.window :])
                     self.mean_training_iterations.append(mean_iteration)
                     print(
-                        "\rEpisode {:d} Mean Rewards {:.2f}\t\t Mean Iterations {:.2f}\t\t".format(
-                            epsilon_index, mean_rewards, mean_iteration
+                        "\rEpisode {:d} Mean Rewards {:.2f}\t\t Mean Losses {:.2f}\t\t Mean Iterations {:.2f}\t\t".format(
+                            epsilon_index,
+                            mean_rewards,
+                            np.mean(self.training_loss[-self.window :]),
+                            mean_iteration,
                         ),
                         end="",
                     )
