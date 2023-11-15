@@ -17,7 +17,7 @@ import numpy as np
 
 from izombie_env2 import config
 from izombie_env2.env import IZenv
-from .threshold import Threshold
+from .epsilons import Epsilons
 from .evaluate_agent import evaluate_agent
 
 # model params
@@ -29,25 +29,18 @@ MODEL_NAME = f"{config.STATE_SIZE},{N_HIDDEN_LAYER_NODES},{config.ACTION_SIZE}"
 class DQNNetwork(nn.Module):
     def __init__(self, device, learning_rate):
         super(DQNNetwork, self).__init__()
-        self.device = device
 
-        # Set up network
         self.network = nn.Sequential(
             nn.Linear(config.STATE_SIZE, N_HIDDEN_LAYER_NODES, bias=True),
             nn.LeakyReLU(),
             nn.Linear(N_HIDDEN_LAYER_NODES, config.ACTION_SIZE, bias=True),
-        )
-
-        # Set to GPU if cuda is specified
-        if self.device == "cuda":
-            self.network.cuda()
+        ).to(device)
 
         self.optimizer = torch.optim.Adam(
             filter(lambda p: p.requires_grad, self.parameters()), lr=learning_rate
         )
 
     def forward(self, x):
-        # Pass the input through the network layers
         return self.network(x)
 
 
@@ -89,6 +82,7 @@ class DQNAgent:
         end_epsilon=0.05,
     ):
         print(f"Using {device} device.")
+        self.device = torch.device(device)
         self.model_name = f"{model_name}_{get_timestamp()}"
         self.model = DQNNetwork(device=device, learning_rate=learning_rate)
         self.target_model = deepcopy(self.model)
@@ -106,7 +100,7 @@ class DQNAgent:
                 "min_replay_memory_size": min_replay_memory_size,
                 "discount": discount,
                 "batch_size": batch_size,
-                "epsilons": Threshold(
+                "epsilons": Epsilons(
                     seq_length=epsilon_length,
                     start_epsilon=start_epsilon,
                     interpolation=epsilon_interpolation,
@@ -118,7 +112,6 @@ class DQNAgent:
             {
                 "step_count": 0,
                 "episode_count": 0,
-                "epsilon_index": 0,
                 "rewards": [],
                 "winning_suns": [],
                 "losses": [],
@@ -130,14 +123,13 @@ class DQNAgent:
     def load_model(self, checkpoint):
         self.model_name = checkpoint["model_name"]
 
-        device = checkpoint["device"]
         self.model.network.load_state_dict(checkpoint["state_dict"])
-        self.model.to(device)
+        self.model.to(self.device)
         self.model.optimizer.load_state_dict(checkpoint["optimizer"])
         for state in self.model.optimizer.state.values():
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
+                    state[k] = v.to(self.device)
 
         self.target_model = deepcopy(self.model)
 
@@ -153,14 +145,22 @@ class DQNAgent:
         self.min_replay_memory_size = checkpoint["min_replay_memory_size"]
         self.discount = checkpoint["discount"]
         self.batch_size = checkpoint["batch_size"]
-        self.epsilons = checkpoint["epsilons"]
+
+        from .threshold import Threshold
+
+        epsilons = checkpoint["epsilons"]
+        if isinstance(epsilons, Threshold):
+            epsilons = Epsilons(
+                seq_length=epsilons.seq_length,
+                start_epsilon=epsilons.start_epsilon,
+                end_epsilon=epsilons.end_epsilon,
+            )
+            epsilons.index = checkpoint["epsilon_index"]
+        self.epsilons = epsilons
 
     def load_stats(self, checkpoint):
         self.step_count = checkpoint["step_count"]
         self.episode_count = checkpoint["episode_count"]
-        self.epsilon_index = (
-            checkpoint["epsilon_index"] if "epsilon_index" in checkpoint else 0
-        )
         self.rewards = checkpoint["rewards"]
         self.winning_suns = checkpoint["winning_suns"]
         self.losses = checkpoint["losses"]
@@ -168,17 +168,10 @@ class DQNAgent:
         self.steps = checkpoint["steps"]
 
     def load_checkpoint(self, filename):
-        checkpoint = torch.load(filename)
-        self.load_model(checkpoint)
-        self.load_env(checkpoint)
-        self.load_hyperparams(checkpoint)
-        self.load_stats(checkpoint)
-
-    def load_checkpoint_new(self, filename):
         with zipfile.ZipFile(filename, "r") as zipf:
             zipf.extractall(os.path.dirname(filename))
         filename = filename[:-4]
-        checkpoint = torch.load(filename)
+        checkpoint = torch.load(filename, map_location=self.device)
         self.load_model(checkpoint)
         self.load_env(checkpoint)
         self.load_hyperparams(checkpoint)
@@ -188,7 +181,6 @@ class DQNAgent:
     def save_checkpoint(self, filename):
         checkpoint = {
             "model_name": self.model_name,
-            "device": self.model.device,
             "state_dict": self.model.network.state_dict(),
             "optimizer": self.model.optimizer.state_dict(),
             "step_length": self.env.step_length,
@@ -209,23 +201,19 @@ class DQNAgent:
         }
         torch.save(checkpoint, filename)
         with zipfile.ZipFile(f"{filename}.zip", "w", zipfile.ZIP_DEFLATED) as zipf:
-            zipf.write(filename)
+            zipf.write(filename, os.path.basename(filename))
         os.remove(filename)
 
     def reset_epsilon(
         self, epsilon_length, start_epsilon, epsilon_interpolation, end_epsilon
     ):
         # pylint: disable=W0201
-        self.epsilons = Threshold(
+        self.epsilons = Epsilons(
             seq_length=epsilon_length,
             start_epsilon=start_epsilon,
             interpolation=epsilon_interpolation,
             end_epsilon=end_epsilon,
         )
-        self.epsilon_index = 0
-
-    def get_epsilon(self):
-        return self.epsilons.epsilon(self.epsilon_index)
 
     def get_best_q_action(self, state, valid_actions):
         with torch.no_grad():
@@ -236,7 +224,7 @@ class DQNAgent:
             return valid_actions[max_q_index]
 
     def decide_action(self, state, valid_actions):
-        if np.random.rand() < self.get_epsilon():
+        if np.random.rand() < self.epsilons.get():
             return np.random.choice(valid_actions)
         return self.get_best_q_action(state, valid_actions)
 
@@ -342,9 +330,10 @@ class DQNAgent:
                     stats_window,
                     prev_episode_count + episode + 1,
                     prev_episode_count + episodes,
-                    start_time,
+                    (datetime.datetime.now() - start_time).total_seconds(),
                 )
-                start_time = datetime.datetime.now()
+
+            self.epsilons.next()
 
             if (
                 self.episode_count % save_checkpoint_every_n_episodes == 0
@@ -361,14 +350,10 @@ class DQNAgent:
                 self.save_checkpoint(filename)
                 print(f"Checkpoint has been saved to {filename}.")
 
-            self.epsilon_index += 1
-            if self.epsilon_index >= self.epsilons.seq_length:
-                self.epsilon_index -= self.epsilons.seq_length
-
     train_with_profiler = profiled(train)
 
     def print_stats(
-        self, stats_window, curr_episode_count, total_episode_count, start_time
+        self, stats_window, curr_episode_count, total_episode_count, seconds_elapsed
     ):
         win_rate = (
             sum(
@@ -381,12 +366,12 @@ class DQNAgent:
         )
         print(
             f"Ep {curr_episode_count}/{total_episode_count} "
-            f"ε {self.get_epsilon():.2f} "
+            f"ε {self.epsilons.get():.2f} "
             f"Mean losses {np.mean(self.losses[-stats_window:]):.2f} "
             f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
             f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
             f"Win {win_rate:.2f}% "
-            f"({(datetime.datetime.now() - start_time).total_seconds():.2f}s)"
+            f"{int(seconds_elapsed / curr_episode_count * 10_000)}s/10k ep"
         )
 
     def get_model_folder(self):

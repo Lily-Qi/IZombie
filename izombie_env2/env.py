@@ -120,23 +120,23 @@ class IZenv:
         return GameStatus.CONTINUE
 
     def _get_reward(self, prev, action, game_status):
-        earned_sun = self.get_sun() - prev["sun_after_action"]
-        eaten_plant_num = prev["plant_count"] - self.plant_count
-        eaten_brain_num = prev["brain_count"] - len(self.brains)
+        # earned_sun = self.get_sun() - prev["sun_after_action"]
+        # eaten_plant_num = prev["plant_count"] - self.plant_count
+        # eaten_brain_num = prev["brain_count"] - len(self.brains)
 
-        reward = earned_sun / 25 + eaten_plant_num * 2 + eaten_brain_num * 10
+        # reward = earned_sun / 25 + eaten_plant_num * 2 + eaten_brain_num * 10
 
-        if game_status == GameStatus.WIN:
-            reward += self.get_sun() / 2
+        # if game_status == GameStatus.WIN:
+        #     reward += self.get_sun() / 2
 
-        if game_status == GameStatus.LOSE:
-            reward -= 300
-
-        return reward
-        # reward = self.get_sun() - prev["sun_before_action"]
         # if game_status == GameStatus.LOSE:
-        #     reward -= 1800
+        #     reward -= 300
+
         # return reward
+        reward = self.get_sun() - prev["sun_before_action"]
+        if game_status == GameStatus.LOSE:
+            reward -= 1800
+        return reward
 
     def _reset_world(self) -> None:
         self.world = World(SceneType.night)
