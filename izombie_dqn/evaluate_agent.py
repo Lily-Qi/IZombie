@@ -30,6 +30,8 @@ def evaluate_agent(
                     winning_suns.append(env.get_sun())
                 break
 
+    print()
+
     results_counter = Counter(game_results)
     total = len(game_results)
 
@@ -47,7 +49,7 @@ def evaluate_agent(
         out += f"Mean winning suns: {np.mean(winning_suns):.2f}\n"
 
     if output_file is None:
-        print(f"\n{out}", end="", flush=True)
+        print(out, end="", flush=True)
     else:
         with open(output_file, "a", encoding="utf-8") as f:
             f.write(f"{out}\n")

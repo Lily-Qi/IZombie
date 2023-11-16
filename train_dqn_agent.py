@@ -19,14 +19,15 @@ if __name__ == "__main__":
         epsilon_interpolation="exponential",
         end_epsilon=0.05,
     )
-    agent.load_checkpoint("model/model_80001.pth.zip")
+    agent.load_checkpoint("model/model_500000.pth.zip")
     # agent.save_checkpoint("model/model_80001.pth")
     agent.train(
-        episodes=420_000,
+        episodes=500_000,
         update_main_every_n_steps=32,
         update_target_every_n_steps=2_000,
-        save_checkpoint_every_n_episodes=10_000,
+        evaluate_every_n_episodes=10_000,
         evaluate_test_size=500,
+        save_checkpoint_every_n_episodes=50_000,
         stats_window=1_000,
     )
     # manually_test_agent(agent)

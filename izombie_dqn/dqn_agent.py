@@ -30,6 +30,8 @@ class DQNNetwork(nn.Module):
     def __init__(self, device, learning_rate):
         super(DQNNetwork, self).__init__()
 
+        self.device = device
+
         self.network = nn.Sequential(
             nn.Linear(config.STATE_SIZE, N_HIDDEN_LAYER_NODES, bias=True),
             nn.LeakyReLU(),
@@ -207,7 +209,6 @@ class DQNAgent:
     def reset_epsilon(
         self, epsilon_length, start_epsilon, epsilon_interpolation, end_epsilon
     ):
-        # pylint: disable=W0201
         self.epsilons = Epsilons(
             seq_length=epsilon_length,
             start_epsilon=start_epsilon,
@@ -290,8 +291,9 @@ class DQNAgent:
         episodes,
         update_main_every_n_steps=32,
         update_target_every_n_steps=2000,
-        save_checkpoint_every_n_episodes=1000,
+        evaluate_every_n_episodes=1000,
         evaluate_test_size=300,
+        save_checkpoint_every_n_episodes=50000,
         stats_window=1000,
     ):
         self.set_to_trainig_mode()
@@ -330,13 +332,14 @@ class DQNAgent:
                     stats_window,
                     prev_episode_count + episode + 1,
                     prev_episode_count + episodes,
-                    (datetime.datetime.now() - start_time).total_seconds(),
+                    (datetime.datetime.now() - start_time).total_seconds()
+                    / (episode + 1),
                 )
 
             self.epsilons.next()
 
             if (
-                self.episode_count % save_checkpoint_every_n_episodes == 0
+                self.episode_count % evaluate_every_n_episodes == 0
                 or episode == episodes - 1
             ):
                 create_folder_if_not_exist(self.get_model_folder())
@@ -346,6 +349,12 @@ class DQNAgent:
                     episode_count=self.episode_count,
                     output_file=f"{self.get_model_folder()}/eval.txt",
                 )
+
+            if (
+                self.episode_count % save_checkpoint_every_n_episodes == 0
+                or episode == episodes - 1
+            ):
+                create_folder_if_not_exist(self.get_model_folder())
                 filename = f"{self.get_model_folder()}/model_{self.episode_count}.pth"
                 self.save_checkpoint(filename)
                 print(f"Checkpoint has been saved to {filename}.")
@@ -353,7 +362,7 @@ class DQNAgent:
     train_with_profiler = profiled(train)
 
     def print_stats(
-        self, stats_window, curr_episode_count, total_episode_count, seconds_elapsed
+        self, stats_window, curr_episode_count, total_episode_count, seconds_per_episode
     ):
         win_rate = (
             sum(
@@ -371,7 +380,7 @@ class DQNAgent:
             f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
             f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
             f"Win {win_rate:.2f}% "
-            f"{int(seconds_elapsed / curr_episode_count * 10_000)}s/10k ep"
+            f"{int(seconds_per_episode * 10_000)}s/10k ep"
         )
 
     def get_model_folder(self):
