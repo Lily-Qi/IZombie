@@ -36,10 +36,10 @@ zombie_deck = [
 
 
 class IZenv:
-    def __init__(self, step_length=50, max_step=None, fix_rand=False):
+    def __init__(self, step_length=50, max_step=None, seed=None):
         self.step_length = step_length
         self.max_step = max_step
-        self.fix_rand = fix_rand
+        self.seed = seed
 
         self.ob_factory = IZObservation(NUM_ZOMBIES, NUM_PLANTS)
         self.state = []
@@ -49,10 +49,11 @@ class IZenv:
         self.world = World(SceneType.night)
         self._reset_world()
 
-    def reset(self) -> None:
+    def reset(self):
         self.zombie_count, self.plant_count, self.brains = 0, 0, [0, 1, 2, 3, 4]
         self.step_count = 0
         self._reset_world()
+        return self.get_state_and_mask()
 
     def get_state_and_mask(self):
         return self.state, self.get_action_mask()
@@ -121,7 +122,7 @@ class IZenv:
 
     def _get_reward(self, prev, action, game_status):
         # return self._get_reward_plain(prev, game_status)
-        
+
         # earned_sun = self.get_sun() - prev["sun_after_action"]
         # eaten_plant_num = prev["plant_count"] - self.plant_count
         eaten_brain_num = prev["brain_count"] - len(self.brains)
@@ -142,8 +143,8 @@ class IZenv:
         plant_list = [
             plant for plant, count in plant_counts.items() for _ in range(count)
         ]
-        if self.fix_rand:
-            np.random.seed(0)
+        if self.seed is not None:
+            np.random.seed(self.seed)
         np.random.shuffle(plant_list)
         for index, plant in enumerate(plant_list):
             self.world.plant_factory.create(
