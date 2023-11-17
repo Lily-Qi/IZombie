@@ -15,7 +15,7 @@ best_winning_rate = 0
 def train_one(i):
     agent = DQNAgent(
         model_dir=MODEL_DIR,
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device="cpu",
         learning_rate=1e-3,
         step_length=50,
         max_step_per_ep=100_000,

@@ -36,10 +36,10 @@ zombie_deck = [
 
 
 class IZenv:
-    def __init__(self, step_length=50, max_step=None, seed=None):
+    def __init__(self, step_length=50, max_step=None, fix_rand=False):
         self.step_length = step_length
         self.max_step = max_step
-        self.seed = seed
+        self.fix_rand = fix_rand
 
         self.ob_factory = IZObservation(NUM_ZOMBIES, NUM_PLANTS)
         self.state = []
@@ -143,8 +143,8 @@ class IZenv:
         plant_list = [
             plant for plant, count in plant_counts.items() for _ in range(count)
         ]
-        if self.seed is not None:
-            np.random.seed(self.seed)
+        if self.fix_rand:
+            np.random.seed(0)
         np.random.shuffle(plant_list)
         for index, plant in enumerate(plant_list):
             self.world.plant_factory.create(

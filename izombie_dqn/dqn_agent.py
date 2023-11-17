@@ -15,14 +15,14 @@ from torch import nn
 import torch
 import numpy as np
 
-from izombie_env2 import config
+from izombie_env2.config import STATE_SIZE, ACTION_SIZE, GameStatus
 from izombie_env2.env import IZenv
 from .epsilons import Epsilons
 from .evaluate_agent import evaluate_agent
 
 # model params
 N_HIDDEN_LAYER_NODES = 100
-MODEL_NAME = f"{config.STATE_SIZE},{N_HIDDEN_LAYER_NODES},{config.ACTION_SIZE}"
+MODEL_NAME = f"{STATE_SIZE},{N_HIDDEN_LAYER_NODES},{ACTION_SIZE}"
 
 
 class DQNNetwork(nn.Module):
@@ -32,9 +32,9 @@ class DQNNetwork(nn.Module):
         self.device = device
 
         self.network = nn.Sequential(
-            nn.Linear(config.STATE_SIZE, N_HIDDEN_LAYER_NODES, bias=True),
+            nn.Linear(STATE_SIZE, N_HIDDEN_LAYER_NODES, bias=True),
             nn.LeakyReLU(),
-            nn.Linear(N_HIDDEN_LAYER_NODES, config.ACTION_SIZE, bias=True),
+            nn.Linear(N_HIDDEN_LAYER_NODES, ACTION_SIZE, bias=True),
         ).to(device)
 
         self.optimizer = torch.optim.Adam(
@@ -235,7 +235,7 @@ class DQNAgent:
             return np.random.choice(valid_actions)
         return self.get_best_q_action(state, valid_actions)
 
-    def set_to_trainig_mode(self):
+    def set_to_training_mode(self):
         self.model.train()
         self.target_model.train()
 
@@ -247,7 +247,7 @@ class DQNAgent:
         action = self.decide_action(state, self.env.get_valid_actions(mask))
 
         reward, next_state, next_mask, game_status = self.env.step(action)
-        done = game_status != config.GameStatus.CONTINUE
+        done = game_status != GameStatus.CONTINUE
         self.step_count += 1
         self.replay_memory.append((state, action, reward, next_state, next_mask, done))
 
@@ -302,7 +302,7 @@ class DQNAgent:
         save_checkpoint_every_n_episodes,
         stats_window,
     ):
-        self.set_to_trainig_mode()
+        self.set_to_training_mode()
         prev_episode_count = self.episode_count
 
         start_time = datetime.datetime.now()
@@ -317,7 +317,7 @@ class DQNAgent:
                 if done:
                     self.game_results.append(game_status)
                     self.steps.append(self.env.step_count)
-                    if game_status == config.GameStatus.WIN:
+                    if game_status == GameStatus.WIN:
                         self.winning_suns.append(self.env.get_sun())
 
                 if (
@@ -374,7 +374,7 @@ class DQNAgent:
             sum(
                 1
                 for res in self.game_results[-stats_window:]
-                if res == config.GameStatus.WIN
+                if res == GameStatus.WIN
             )
             * 100
             / min(stats_window, len(self.game_results))

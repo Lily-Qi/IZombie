@@ -54,10 +54,10 @@ def evaluate_agent(
         with open(output_file, "a", encoding="utf-8") as f:
             f.write(f"{out}\n")
 
-    agent.set_to_trainig_mode()
+    agent.set_to_training_mode()
 
     winning_rate = results_counter.get(GameStatus.WIN, 0) / len(game_results)
-    mean_winning_sun = np.mean(winning_suns)
+    mean_winning_sun = np.mean(winning_suns) if len(winning_suns) > 0 else -1
     return winning_rate, mean_winning_sun
 
 
@@ -85,4 +85,4 @@ def manually_test_agent(agent):
         if game_status != GameStatus.CONTINUE:
             break
 
-    agent.set_to_trainig_mode()
+    agent.set_to_training_mode()

@@ -6,6 +6,8 @@ from torch.nn.utils import clip_grad_norm_
 import numpy as np
 from typing import Dict, Tuple
 import datetime
+import os
+import zipfile
 
 from .noisy_layer import NoisyLinear
 from .replay_buffer import PrioritizedReplayBuffer, ReplayBuffer
@@ -74,10 +76,9 @@ class DQNAgent:
     """DQN Agent interacting with environment.
 
     Attribute:
-        env (gym.Env): openAI Gym environment
+        env (IZenv): izombie env
         memory (PrioritizedReplayBuffer): replay memory to store transitions
         batch_size (int): batch size for sampling
-        target_update (int): period for target model's hard update
         gamma (float): discount factor
         dqn (Network): model to train and select actions
         dqn_target (Network): target model to update
@@ -95,11 +96,12 @@ class DQNAgent:
 
     def __init__(
         self,
+        seed: int,
         env: IZenv,
+        model_name: str,
+        device: str,
         memory_size: int,
         batch_size: int,
-        target_update: int,
-        seed: int,
         gamma: float = 0.99,
         # PER parameters
         alpha: float = 0.2,
@@ -118,7 +120,6 @@ class DQNAgent:
             env (gym.Env): openAI Gym environment
             memory_size (int): length of memory
             batch_size (int): batch size for sampling
-            target_update (int): period for target model's hard update
             lr (float): learning rate
             gamma (float): discount factor
             alpha (float): determines how much prioritization is used
@@ -133,14 +134,14 @@ class DQNAgent:
         action_dim = ACTION_SIZE
 
         self.env = env
+        self.model_name = model_name
         self.batch_size = batch_size
-        self.target_update = target_update
         self.seed = seed
         self.gamma = gamma
         # NoisyNet: All attributes related to epsilon are removed
 
         # device: cpu / gpu
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device)
         print(f"Using {self.device} device.")
 
         # PER
@@ -276,13 +277,16 @@ class DQNAgent:
         num_steps: int,
         stats_window: int = 1_000,
         print_stats_every_n_steps=30_000,
+        update_main_every_n_steps=1,
+        update_target_every_n_steps=2000,
+        save_every_n_steps=None,
     ):
         """Train the agent."""
         self.is_test = False
+        self.set_to_training_mode()
 
         state, mask = self.env.reset()
         update_cnt = 0
-        losses = []
         scores = []
         score = 0
 
@@ -304,6 +308,9 @@ class DQNAgent:
             # if episode ends
             if done:
                 self.game_results.append(game_status)
+                self.steps.append(self.env.step_count)
+                if game_status == GameStatus.WIN:
+                    self.winning_suns.append(self.env.get_sun())
                 state, mask = self.env.reset()
                 scores.append(score)
                 score = 0
@@ -311,33 +318,30 @@ class DQNAgent:
             # if training is ready
             if len(self.memory) >= self.batch_size:
                 loss = self.update_model()
-                losses.append(loss)
+                self.losses.append(loss)
                 update_cnt += 1
 
                 # if hard update is needed
-                if update_cnt % self.target_update == 0:
+                if update_cnt % update_target_every_n_steps == 0:
                     self._sync_target_with_main()
 
-            if step_idx % 30_000 == 0:
-                self.print_stats(
-                    stats_window,
-                    step_idx,
-                    num_steps,
-                    start_time,
-                    print_stats_every_n_steps,
-                )
-                start_time = datetime.datetime.now()
+            if step_idx % print_stats_every_n_steps == 0:
+                self.print_stats(stats_window, step_idx, num_steps, start_time)
+
+            if (
+                save_every_n_steps is not None and step_idx % save_every_n_steps == 0
+            ) or step_idx == num_steps:
+                self.save(f"model/{self.model_name}_{step_idx}_{get_timestamp()}.pth")
 
     def _compute_dqn_loss(
         self, samples: Dict[str, np.ndarray], gamma: float
     ) -> torch.Tensor:
         """Return categorical dqn loss."""
-        device = self.device  # for shortening the following lines
-        state = torch.FloatTensor(samples["obs"]).to(device)
-        next_state = torch.FloatTensor(samples["next_obs"]).to(device)
-        action = torch.LongTensor(samples["acts"]).to(device)
-        reward = torch.FloatTensor(samples["rews"].reshape(-1, 1)).to(device)
-        done = torch.FloatTensor(samples["done"].reshape(-1, 1)).to(device)
+        state = torch.FloatTensor(samples["obs"]).to(self.device)
+        next_state = torch.FloatTensor(samples["next_obs"]).to(self.device)
+        action = torch.LongTensor(samples["acts"]).to(self.device)
+        reward = torch.FloatTensor(samples["rews"].reshape(-1, 1)).to(self.device)
+        done = torch.FloatTensor(samples["done"].reshape(-1, 1)).to(self.device)
 
         # Categorical DQN algorithm
         delta_z = float(self.v_max - self.v_min) / (self.atom_size - 1)
@@ -382,7 +386,7 @@ class DQNAgent:
         """Hard update: target <- local."""
         self.dqn_target.load_state_dict(self.dqn.state_dict())
 
-    def print_stats(self, stats_window, curr_step, total_step, start_time, step_range):
+    def print_stats(self, stats_window, curr_step, total_step, start_time):
         win_rate = (
             sum(1 for res in self.game_results[-stats_window:] if res == GameStatus.WIN)
             * 100
@@ -395,5 +399,31 @@ class DQNAgent:
             f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
             f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
             f"Win {win_rate:.2f}% "
-            f"{elasped_seconds / step_range * 1_000_000:.2f}s/1m steps"
+            f"{elasped_seconds / curr_step * 10_000:.2f}s/10k steps"
         )
+
+    def set_to_training_mode(self):
+        self.dqn.train()
+
+    def set_to_eval_mode(self):
+        self.dqn.eval()
+
+    def save(self, filename):
+        assert not os.path.exists(filename)
+        torch.save(self.dqn.state_dict(), filename)
+        with zipfile.ZipFile(f"{filename}.zip", "w", zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(filename, os.path.basename(filename))
+        os.remove(filename)
+
+    def load(self, filename, device="cpu"):
+        with zipfile.ZipFile(filename, "r") as zipf:
+            zipf.extractall(os.path.dirname(filename))
+        filename = filename[:-4]
+        state_dict = torch.load(filename, map_location=device)
+        self.dqn.load_state_dict(state_dict)
+        self.dqn_target.load_state_dict(state_dict)
+        os.remove(filename)
+
+
+def get_timestamp():
+    return datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
