@@ -1,15 +1,10 @@
 import numpy as np
 
-# pylint: disable=E0611
 from pvzemu import (
     World,
     SceneType,
     ZombieType,
     PlantType,
-    # Scene,
-    # SunData,
-    # PlantList,
-    # ZombieList,
     IZObservation,
 )
 from .config import (
@@ -119,23 +114,24 @@ class IZenv:
             return GameStatus.LOSE
         return GameStatus.CONTINUE
 
+    def _get_reward_plain(self, prev, game_status):
+        if game_status == GameStatus.LOSE:
+            return -72
+        return (self.get_sun() - prev["sun_before_action"]) / 25
+
     def _get_reward(self, prev, action, game_status):
+        # return self._get_reward_plain(prev, game_status)
+        
         # earned_sun = self.get_sun() - prev["sun_after_action"]
         # eaten_plant_num = prev["plant_count"] - self.plant_count
-        # eaten_brain_num = prev["brain_count"] - len(self.brains)
+        eaten_brain_num = prev["brain_count"] - len(self.brains)
 
-        # reward = earned_sun / 25 + eaten_plant_num * 2 + eaten_brain_num * 10
-
-        # if game_status == GameStatus.WIN:
-        #     reward += self.get_sun() / 2
-
-        # if game_status == GameStatus.LOSE:
-        #     reward -= 300
-
-        # return reward
-        reward = self.get_sun() - prev["sun_before_action"]
+        reward = (self.get_sun() - prev["sun_before_action"]) / 25
+        reward += eaten_brain_num * 8
+        if game_status == GameStatus.WIN:
+            reward += self.get_sun() / 25
         if game_status == GameStatus.LOSE:
-            reward -= 1800
+            reward = -72
         return reward
 
     def _reset_world(self) -> None:
@@ -169,8 +165,9 @@ class IZenv:
             self.world.scene.set_sun(sun)
 
     def _update_state(self):
-        state, self.zombie_count, self.plant_count = self.ob_factory.create(self.world)
-        self.state = list(state)
+        self.state, self.zombie_count, self.plant_count = self.ob_factory.create(
+            self.world
+        )
 
         self.brains = []
         for i, b in enumerate(self.state[BRAIN_BASE : BRAIN_BASE + 5]):

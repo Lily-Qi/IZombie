@@ -29,9 +29,9 @@ class Epsilons:
     def next(self):
         self.index += 1
         if self.index >= self.seq_length:
-            self.index = self.seq_length - 1
             if not self.has_warned:
                 self.has_warned = True
                 warnings.warn(
-                    f"index ({self.index}) ≥ seq_length ({self.seq_length}), using index = {self.seq_length - 1}."
+                    f"index = {self.index} overflows for seq_length = {self.seq_length}, using index = {self.seq_length - 1}."
                 )
+            self.index = self.seq_length - 1

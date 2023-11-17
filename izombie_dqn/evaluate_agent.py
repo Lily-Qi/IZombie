@@ -56,6 +56,10 @@ def evaluate_agent(
 
     agent.set_to_trainig_mode()
 
+    winning_rate = results_counter.get(GameStatus.WIN, 0) / len(game_results)
+    mean_winning_sun = np.mean(winning_suns)
+    return winning_rate, mean_winning_sun
+
 
 def manually_test_agent(agent):
     agent.set_to_eval_mode()

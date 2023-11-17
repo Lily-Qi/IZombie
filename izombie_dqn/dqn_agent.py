@@ -22,7 +22,6 @@ from .evaluate_agent import evaluate_agent
 
 # model params
 N_HIDDEN_LAYER_NODES = 100
-MODEL_FOLDER = "model"
 MODEL_NAME = f"{config.STATE_SIZE},{N_HIDDEN_LAYER_NODES},{config.ACTION_SIZE}"
 
 
@@ -66,6 +65,7 @@ class DQNAgent:
     def __init__(
         self,
         # model
+        model_dir="model",
         model_name=MODEL_NAME,
         device="cuda" if torch.cuda.is_available() else "cpu",
         learning_rate=1e-3,
@@ -85,6 +85,7 @@ class DQNAgent:
     ):
         print(f"Using {device} device.")
         self.device = torch.device(device)
+        self.model_dir = model_dir
         self.model_name = f"{model_name}_{get_timestamp()}"
         self.model = DQNNetwork(device=device, learning_rate=learning_rate)
         self.target_model = deepcopy(self.model)
@@ -123,6 +124,9 @@ class DQNAgent:
         )
 
     def load_model(self, checkpoint):
+        self.model_dir = (
+            checkpoint["model_dir"] if "model_dir" in checkpoint else "model"
+        )
         self.model_name = checkpoint["model_name"]
 
         self.model.network.load_state_dict(checkpoint["state_dict"])
@@ -181,7 +185,9 @@ class DQNAgent:
         os.remove(filename)
 
     def save_checkpoint(self, filename):
+        assert not os.path.exists(filename)
         checkpoint = {
+            "model_dir": self.model_dir,
             "model_name": self.model_name,
             "state_dict": self.model.network.state_dict(),
             "optimizer": self.model.optimizer.state_dict(),
@@ -289,12 +295,12 @@ class DQNAgent:
     def train(
         self,
         episodes,
-        update_main_every_n_steps=32,
-        update_target_every_n_steps=2000,
-        evaluate_every_n_episodes=1000,
-        evaluate_test_size=300,
-        save_checkpoint_every_n_episodes=50000,
-        stats_window=1000,
+        update_main_every_n_steps,
+        update_target_every_n_steps,
+        evaluate_every_n_episodes,
+        evaluate_test_size,
+        save_checkpoint_every_n_episodes,
+        stats_window,
     ):
         self.set_to_trainig_mode()
         prev_episode_count = self.episode_count
@@ -339,8 +345,8 @@ class DQNAgent:
             self.epsilons.next()
 
             if (
-                self.episode_count % evaluate_every_n_episodes == 0
-                or episode == episodes - 1
+                evaluate_every_n_episodes is not None
+                and self.episode_count % evaluate_every_n_episodes == 0
             ):
                 create_folder_if_not_exist(self.get_model_folder())
                 evaluate_agent(
@@ -351,8 +357,8 @@ class DQNAgent:
                 )
 
             if (
-                self.episode_count % save_checkpoint_every_n_episodes == 0
-                or episode == episodes - 1
+                save_checkpoint_every_n_episodes is not None
+                and self.episode_count % save_checkpoint_every_n_episodes == 0
             ):
                 create_folder_if_not_exist(self.get_model_folder())
                 filename = f"{self.get_model_folder()}/model_{self.episode_count}.pth"
@@ -384,7 +390,7 @@ class DQNAgent:
         )
 
     def get_model_folder(self):
-        return f"{MODEL_FOLDER}/{self.model_name}"
+        return f"{self.model_dir}/{self.model_name}"
 
 
 def create_folder_if_not_exist(folder_name):
