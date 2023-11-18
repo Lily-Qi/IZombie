@@ -11,6 +11,7 @@ import zipfile
 
 from .noisy_layer import NoisyLinear
 from .replay_buffer import PrioritizedReplayBuffer, ReplayBuffer
+from .util import get_timestamp, create_folder_if_not_exist
 
 from izombie_env2.env import IZenv
 from izombie_env2.config import ACTION_SIZE, STATE_SIZE
@@ -96,7 +97,6 @@ class DQNAgent:
 
     def __init__(
         self,
-        seed: int,
         env: IZenv,
         model_name: str,
         device: str,
@@ -136,7 +136,6 @@ class DQNAgent:
         self.env = env
         self.model_name = model_name
         self.batch_size = batch_size
-        self.seed = seed
         self.gamma = gamma
         # NoisyNet: All attributes related to epsilon are removed
 
@@ -277,8 +276,8 @@ class DQNAgent:
         num_steps: int,
         stats_window: int = 1_000,
         print_stats_every_n_steps=30_000,
-        update_main_every_n_steps=1,
         update_target_every_n_steps=2000,
+        update_main_every_n_steps=1,
         save_every_n_steps=None,
     ):
         """Train the agent."""
@@ -286,7 +285,6 @@ class DQNAgent:
         self.set_to_training_mode()
 
         state, mask = self.env.reset()
-        update_cnt = 0
         scores = []
         score = 0
 
@@ -316,14 +314,16 @@ class DQNAgent:
                 score = 0
 
             # if training is ready
-            if len(self.memory) >= self.batch_size:
+            if (
+                len(self.memory) >= self.batch_size
+                and step_idx % update_main_every_n_steps == 0
+            ):
                 loss = self.update_model()
                 self.losses.append(loss)
-                update_cnt += 1
 
-                # if hard update is needed
-                if update_cnt % update_target_every_n_steps == 0:
-                    self._sync_target_with_main()
+            # if hard update is needed
+            if step_idx % update_target_every_n_steps == 0:
+                self._sync_target_with_main()
 
             if step_idx % print_stats_every_n_steps == 0:
                 self.print_stats(stats_window, step_idx, num_steps, start_time)
@@ -410,6 +410,7 @@ class DQNAgent:
 
     def save(self, filename):
         assert not os.path.exists(filename)
+        create_folder_if_not_exist(os.path.dirname(filename))
         torch.save(self.dqn.state_dict(), filename)
         with zipfile.ZipFile(f"{filename}.zip", "w", zipfile.ZIP_DEFLATED) as zipf:
             zipf.write(filename, os.path.basename(filename))
@@ -423,7 +424,3 @@ class DQNAgent:
         self.dqn.load_state_dict(state_dict)
         self.dqn_target.load_state_dict(state_dict)
         os.remove(filename)
-
-
-def get_timestamp():
-    return datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
