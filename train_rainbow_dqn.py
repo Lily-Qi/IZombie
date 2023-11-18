@@ -27,7 +27,6 @@ env = IZenv()
 num_steps = 10_000
 agent = DQNAgent(
     env,
-    seed=seed,
     device="cpu",
     model_name="r1",
     memory_size=100_000,
@@ -43,10 +42,10 @@ agent = DQNAgent(
 )
 agent.train(
     update_target_every_n_steps=2000,
-    update_main_every_n_steps=1,
+    update_main_every_n_steps=32,
     num_steps=num_steps,
     print_stats_every_n_steps=1_000,
     save_every_n_steps=None,
 )
 evaluate_agent(agent)
-manually_test_agent(agent)
+# manually_test_agent(agent)
