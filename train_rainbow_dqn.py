@@ -21,10 +21,10 @@ def set_seed(seed):
 
 
 seed = 0
-num_steps = 2_000_000
-num_steps = 100_000
 set_seed(seed)
 env = IZenv()
+
+num_steps = 10_000
 agent = DQNAgent(
     env,
     seed=seed,
@@ -32,19 +32,21 @@ agent = DQNAgent(
     model_name="r1",
     memory_size=100_000,
     batch_size=128,
-    target_update=2000,
     gamma=0.99,
-    alpha = 0.2,
-    beta = 0.6,
-    prior_eps = 1e-6,
-    v_min = 0.0,
-    v_max = 200.0,
-    atom_size = 51,
-    n_step = 3,
+    alpha=0.2,
+    beta=0.6,
+    prior_eps=1e-6,
+    v_min=0.0,
+    v_max=200.0,
+    atom_size=51,
+    n_step=3,
 )
-# agent.load("model/1.pth.zip")
 agent.train(
-    num_steps=num_steps, print_stats_every_n_steps=1_000, save_every_n_steps=None
+    update_target_every_n_steps=2000,
+    update_main_every_n_steps=1,
+    num_steps=num_steps,
+    print_stats_every_n_steps=1_000,
+    save_every_n_steps=None,
 )
 evaluate_agent(agent)
 manually_test_agent(agent)
