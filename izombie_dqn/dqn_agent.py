@@ -113,7 +113,6 @@ class DQNAgent:
         )
         self.load_stats(
             {
-                "step_count": 0,
                 "episode_count": 0,
                 "rewards": [],
                 "winning_suns": [],
@@ -165,7 +164,6 @@ class DQNAgent:
         self.epsilons = epsilons
 
     def load_stats(self, checkpoint):
-        self.step_count = checkpoint["step_count"]
         self.episode_count = checkpoint["episode_count"]
         self.rewards = checkpoint["rewards"]
         self.winning_suns = checkpoint["winning_suns"]
@@ -199,7 +197,6 @@ class DQNAgent:
             "discount": self.discount,
             "batch_size": self.batch_size,
             "epsilons": self.epsilons,
-            "step_count": self.step_count,
             "episode_count": self.episode_count,
             "rewards": self.rewards,
             "winning_suns": self.winning_suns,
@@ -248,7 +245,6 @@ class DQNAgent:
 
         reward, next_state, next_mask, game_status = self.env.step(action)
         done = game_status != GameStatus.CONTINUE
-        self.step_count += 1
         self.replay_memory.append((state, action, reward, next_state, next_mask, done))
 
         self.rewards.append(reward)
@@ -287,79 +283,63 @@ class DQNAgent:
         loss.backward()
         self.model.optimizer.step()
 
-        self.losses.append(loss.item())
+        return loss.item()
 
     def sync_target_model_with_main(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
     def train(
         self,
-        episodes,
-        update_main_every_n_steps,
-        update_target_every_n_steps,
-        evaluate_every_n_episodes,
+        num_steps,
+        update_main_every,
+        update_target_every,
+        eval_every,
         evaluate_test_size,
-        save_checkpoint_every_n_episodes,
+        save_every,
         stats_window,
+        print_stats_every=30_000,
     ):
         self.set_to_training_mode()
-        prev_episode_count = self.episode_count
 
+        state, mask = self.env.reset()
         start_time = datetime.datetime.now()
-        for episode in range(episodes):
-            self.env.reset()
-            state, mask = self.env.get_state_and_mask()
-            done = False
 
-            while not done:
-                next_state, next_mask, game_status, done = self.take_step(state, mask)
+        for step_idx in range(1, num_steps + 1):
+            action = self.get_best_q_action(state, mask)
+            state, mask, reward, game_status, done = self.step(action)
 
-                if done:
-                    self.game_results.append(game_status)
-                    self.steps.append(self.env.step_count)
-                    if game_status == GameStatus.WIN:
-                        self.winning_suns.append(self.env.get_sun())
-
-                if (
-                    len(self.replay_memory) > self.min_replay_memory_size
-                    and self.step_count % update_main_every_n_steps == 0
-                ):
-                    self.update_main_model()
-
-                if self.step_count % update_target_every_n_steps == 0:
-                    self.sync_target_model_with_main()
-
-                state, mask = next_state, next_mask
-
-            self.episode_count += 1
-
-            if self.episode_count % 100 == 0:
-                self.print_stats(
-                    stats_window,
-                    prev_episode_count + episode + 1,
-                    prev_episode_count + episodes,
-                    (datetime.datetime.now() - start_time).total_seconds()
-                    / (episode + 1),
-                )
-
-            self.epsilons.next()
+            if done:
+                self.game_results.append(game_status)
+                self.steps.append(self.env.step_count)
+                if game_status == GameStatus.WIN:
+                    self.winning_suns.append(self.env.get_sun())
+                state, mask = self.env.reset()
+                self.epsilons.next()
 
             if (
-                evaluate_every_n_episodes is not None
-                and self.episode_count % evaluate_every_n_episodes == 0
+                len(self.replay_memory) > self.min_replay_memory_size
+                and step_idx % update_main_every == 0
             ):
-                create_folder_if_not_exist(self.get_model_folder())
+                loss = self.update_main_model()
+                self.losses.append(loss)
+
+            if step_idx % update_target_every == 0:
+                self.sync_target_model_with_main()
+
+            if step_idx % print_stats_every == 0:
+                self.print_stats(stats_window, step_idx, num_steps, start_time)
+
+            if eval_every is not None and step_idx % eval_every == 0:
                 evaluate_agent(
                     self,
                     test_size=evaluate_test_size,
-                    episode_count=self.episode_count,
+                    step_count=step_idx,
                     output_file=f"{self.get_model_folder()}/eval.txt",
                 )
 
             if (
-                save_checkpoint_every_n_episodes is not None
-                and self.episode_count % save_checkpoint_every_n_episodes == 0
-            ):
+                save_every is not None and self.episode_count % save_every == 0
+            ) or step_idx == num_steps:
                 create_folder_if_not_exist(self.get_model_folder())
                 filename = f"{self.get_model_folder()}/model_{self.episode_count}.pth"
                 self.save_checkpoint(filename)
@@ -367,26 +347,20 @@ class DQNAgent:
 
     train_with_profiler = profiled(train)
 
-    def print_stats(
-        self, stats_window, curr_episode_count, total_episode_count, seconds_per_episode
-    ):
+    def print_stats(self, stats_window, curr_step, total_step, start_time):
         win_rate = (
-            sum(
-                1
-                for res in self.game_results[-stats_window:]
-                if res == GameStatus.WIN
-            )
+            sum(1 for res in self.game_results[-stats_window:] if res == GameStatus.WIN)
             * 100
             / min(stats_window, len(self.game_results))
         )
+        elasped_seconds = (datetime.datetime.now() - start_time).total_seconds()
         print(
-            f"Ep {curr_episode_count}/{total_episode_count} "
-            f"ε {self.epsilons.get():.2f} "
+            f"Sp {curr_step}/{total_step} "
             f"Mean losses {np.mean(self.losses[-stats_window:]):.2f} "
             f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
             f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
             f"Win {win_rate:.2f}% "
-            f"{int(seconds_per_episode * 10_000)}s/10k ep"
+            f"{elasped_seconds / curr_step * 1_000_000:.2f}s/1m steps"
         )
 
     def get_model_folder(self):

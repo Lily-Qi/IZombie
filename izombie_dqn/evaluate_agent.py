@@ -1,24 +1,24 @@
 from collections import Counter
 import numpy as np
+import os
 
 from izombie_env2.config import GameStatus
 from izombie_env2.env import IZenv
+from .util import create_folder_if_not_exist, format_num
 
 
-def evaluate_agent(
-    agent, max_step=100_000, test_size=500, episode_count=None, output_file=None
-):
+def evaluate_agent(agent, test_size=500, step_count=None, output_file=None):
     agent.set_to_eval_mode()
     game_results = []
     steps = []
     winning_suns = []
 
-    for test_idx in range(test_size):
+    for test_idx in range(1, test_size + 1):
         print(f"\rTesting {test_idx}/{test_size}...", end="")
-        env = IZenv(max_step=max_step)
+        env = IZenv()
         state, mask = env.get_state_and_mask()
 
-        for step in range(max_step + 1):
+        for step in range(1_000_000):
             action = agent.get_best_q_action(state, env.get_valid_actions(mask))
             _, next_state, next_mask, game_status = env.step(action)
             state, mask = next_state, next_mask
@@ -34,25 +34,31 @@ def evaluate_agent(
 
     results_counter = Counter(game_results)
     total = len(game_results)
-
-    out = ""
-    if episode_count is not None:
-        out += f"Episode: {episode_count}\n"
-    out += f"Max step: {max_step}\n"
+    percentages = {}
     for status in GameStatus:
-        count = results_counter.get(status, 0)
-        if count != 0:
-            percentage = (count / total) * 100 if total > 0 else 0
-            out += f"{status.name}: {count}/{total} ({percentage:.2f}%)\n"
-    out += f"Mean steps: {np.mean(steps):.2f}\n"
-    if (len(winning_suns)) > 0:
-        out += f"Mean winning suns: {np.mean(winning_suns):.2f}\n"
+        percentages[status] = (
+            (results_counter.get(status, 0) / total) * 100 if total > 0 else 0
+        )
 
     if output_file is None:
-        print(out, end="", flush=True)
+        if step_count is not None:
+            print(f"Step: {format_num(step_count)}")
+        for status in GameStatus:
+            count = results_counter.get(status, 0)
+            if count != 0:
+                print(f"{status.name}: {count}/{total} ({percentages[status]:.2f}%)")
+        print(f"Mean steps: {np.mean(steps):.2f}")
+        if (len(winning_suns)) > 0:
+            print(f"Mean winning suns: {np.mean(winning_suns):.2f}")
     else:
+        create_folder_if_not_exist(os.path.dirname(output_file))
+        start_new_file = not os.path.exists(output_file)
         with open(output_file, "a", encoding="utf-8") as f:
-            f.write(f"{out}\n")
+            if start_new_file:
+                f.write("step,test_size,win,lose,mean_steps,mean_winning_suns,\n")
+            f.write(
+                f"{step_count},{test_size},{percentages[GameStatus.WIN]:.2f}%,{percentages[GameStatus.LOSE]:.2f}%,{np.mean(steps):.2f},{np.mean(winning_suns):.2f}\n"
+            )
 
     agent.set_to_training_mode()
 
@@ -61,10 +67,15 @@ def evaluate_agent(
     return winning_rate, mean_winning_sun
 
 
-def manually_test_agent(agent):
+def manually_test_agent(agent, fix_rand=True):
     agent.set_to_eval_mode()
 
-    env = IZenv(fix_rand=True)
+    if fix_rand:
+        np.random.seed(0)
+    else:
+        np.random.seed()
+
+    env = IZenv()
     state, mask = env.get_state_and_mask()
     last_step = 0
 

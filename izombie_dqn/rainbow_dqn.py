@@ -7,15 +7,15 @@ import numpy as np
 from typing import Dict, Tuple
 import datetime
 import os
-import zipfile
 
 from .noisy_layer import NoisyLinear
 from .replay_buffer import PrioritizedReplayBuffer, ReplayBuffer
-from .util import get_timestamp, create_folder_if_not_exist
+from .util import get_timestamp, create_folder_if_not_exist, format_num
 
 from izombie_env2.env import IZenv
 from izombie_env2.config import ACTION_SIZE, STATE_SIZE
 from izombie_env2.config import GameStatus
+from .evaluate_agent import evaluate_agent
 
 
 class Network(nn.Module):
@@ -103,6 +103,7 @@ class DQNAgent:
         memory_size: int,
         batch_size: int,
         gamma: float = 0.99,
+        lr: float = 1e-3,
         # PER parameters
         alpha: float = 0.2,
         beta: float = 0.6,
@@ -178,7 +179,7 @@ class DQNAgent:
         self.dqn_target.eval()
 
         # optimizer
-        self.optimizer = optim.Adam(self.dqn.parameters())
+        self.optimizer = optim.Adam(self.dqn.parameters(), lr=lr)
 
         # transition to store in memory
         self.transition = list()
@@ -230,7 +231,7 @@ class DQNAgent:
 
         return next_state, next_mask, reward, game_status, done
 
-    def update_model(self) -> torch.Tensor:
+    def update_main_model(self) -> torch.Tensor:
         """Update the model by gradient descent."""
         # PER needs beta to calculate weights
         samples = self.memory.sample_batch(self.beta)
@@ -275,27 +276,23 @@ class DQNAgent:
         self,
         num_steps: int,
         stats_window: int = 1_000,
-        print_stats_every_n_steps=30_000,
-        update_target_every_n_steps=2000,
-        update_main_every_n_steps=1,
-        save_every_n_steps=None,
+        print_stats_every=30_000,
+        update_target_every=2000,
+        update_main_every=1,
+        save_every=None,
+        eval_every=None,
     ):
         """Train the agent."""
+        model_dir = f"model/{self.model_name}_{get_timestamp()}"
         self.is_test = False
         self.set_to_training_mode()
 
         state, mask = self.env.reset()
-        scores = []
-        score = 0
-
         start_time = datetime.datetime.now()
 
         for step_idx in range(1, num_steps + 1):
             action = self.get_best_q_action(state, mask)
-            next_state, next_mask, reward, game_status, done = self.step(action)
-
-            state, mask = next_state, next_mask
-            score += reward
+            state, mask, reward, game_status, done = self.step(action)
 
             # NoisyNet: removed decrease of epsilon
 
@@ -310,28 +307,31 @@ class DQNAgent:
                 if game_status == GameStatus.WIN:
                     self.winning_suns.append(self.env.get_sun())
                 state, mask = self.env.reset()
-                scores.append(score)
-                score = 0
 
             # if training is ready
             if (
                 len(self.memory) >= self.batch_size
-                and step_idx % update_main_every_n_steps == 0
+                and step_idx % update_main_every == 0
             ):
-                loss = self.update_model()
+                loss = self.update_main_model()
                 self.losses.append(loss)
 
             # if hard update is needed
-            if step_idx % update_target_every_n_steps == 0:
+            if step_idx % update_target_every == 0:
                 self._sync_target_with_main()
 
-            if step_idx % print_stats_every_n_steps == 0:
+            if step_idx % print_stats_every == 0:
                 self.print_stats(stats_window, step_idx, num_steps, start_time)
 
+            if eval_every is not None and step_idx % eval_every == 0:
+                evaluate_agent(
+                    self, step_count=step_idx, output_file=f"{model_dir}/eval.csv"
+                )
+
             if (
-                save_every_n_steps is not None and step_idx % save_every_n_steps == 0
+                save_every is not None and step_idx % save_every == 0
             ) or step_idx == num_steps:
-                self.save(f"model/{self.model_name}_{step_idx}_{get_timestamp()}.pth")
+                self.save(f"{model_dir}/{format_num(step_idx)}.pth")
 
     def _compute_dqn_loss(
         self, samples: Dict[str, np.ndarray], gamma: float
@@ -394,12 +394,12 @@ class DQNAgent:
         )
         elasped_seconds = (datetime.datetime.now() - start_time).total_seconds()
         print(
-            f"Sp {curr_step}/{total_step} "
+            f"Sp {format_num(curr_step)}/{format_num(total_step)} "
             f"Mean losses {np.mean(self.losses[-stats_window:]):.2f} "
             f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
             f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
             f"Win {win_rate:.2f}% "
-            f"{elasped_seconds / curr_step * 10_000:.2f}s/10k steps"
+            f"{elasped_seconds / curr_step * 1_000_000:.2f}s/1m steps"
         )
 
     def set_to_training_mode(self):
@@ -412,15 +412,8 @@ class DQNAgent:
         assert not os.path.exists(filename)
         create_folder_if_not_exist(os.path.dirname(filename))
         torch.save(self.dqn.state_dict(), filename)
-        with zipfile.ZipFile(f"{filename}.zip", "w", zipfile.ZIP_DEFLATED) as zipf:
-            zipf.write(filename, os.path.basename(filename))
-        os.remove(filename)
 
-    def load(self, filename, device="cpu"):
-        with zipfile.ZipFile(filename, "r") as zipf:
-            zipf.extractall(os.path.dirname(filename))
-        filename = filename[:-4]
-        state_dict = torch.load(filename, map_location=device)
+    def load(self, filename):
+        state_dict = torch.load(filename, map_location=self.device)
         self.dqn.load_state_dict(state_dict)
         self.dqn_target.load_state_dict(state_dict)
-        os.remove(filename)

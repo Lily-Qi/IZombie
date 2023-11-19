@@ -24,28 +24,31 @@ seed = 0
 set_seed(seed)
 env = IZenv()
 
-num_steps = 10_000
+num_steps = 3_000_000
 agent = DQNAgent(
     env,
     device="cpu",
-    model_name="r1",
-    memory_size=100_000,
+    model_name="r2",
+    memory_size=1_000_000,
     batch_size=128,
     gamma=0.99,
     alpha=0.2,
     beta=0.6,
     prior_eps=1e-6,
-    v_min=0.0,
-    v_max=200.0,
+    v_min=-72.0,
+    v_max=55.0,
     atom_size=51,
     n_step=3,
+    lr=1e-3,
 )
+# agent.load("model/r1_2023.11.19_00.55.17/42.5m.pth")
+# manually_test_agent(agent, fix_rand=False)
 agent.train(
-    update_target_every_n_steps=2000,
-    update_main_every_n_steps=32,
+    update_target_every=2000,
+    update_main_every=32,
     num_steps=num_steps,
-    print_stats_every_n_steps=1_000,
-    save_every_n_steps=None,
+    print_stats_every=100_000,
+    save_every=500_000,
+    eval_every=500_000,
 )
 evaluate_agent(agent)
-# manually_test_agent(agent)

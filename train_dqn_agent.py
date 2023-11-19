@@ -32,15 +32,15 @@ def train_one(i):
     agent.model_name = f"{i + 1}"
 
     agent.train(
-        episodes=100_000,
-        update_main_every_n_steps=32,
-        update_target_every_n_steps=2_000,
-        evaluate_every_n_episodes=None,
+        num_steps=100_000,
+        update_main_every=32,
+        update_target_every=2_000,
+        eval_every=None,
         evaluate_test_size=500,
-        save_checkpoint_every_n_episodes=None,
+        save_every=None,
         stats_window=1_000,
     )
-    winning_rate, _ = evaluate_agent(agent, max_step=100_000, test_size=500)
+    winning_rate, _ = evaluate_agent(agent, test_size=500)
     with lock:
         global best_agent, best_winning_rate
         if winning_rate > best_winning_rate:

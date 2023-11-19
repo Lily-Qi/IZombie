@@ -36,22 +36,23 @@ zombie_deck = [
 
 
 class IZenv:
-    def __init__(self, step_length=50, max_step=None, fix_rand=False):
+    def __init__(self, step_length=50, max_step=None):
         self.step_length = step_length
         self.max_step = max_step
-        self.fix_rand = fix_rand
 
         self.ob_factory = IZObservation(NUM_ZOMBIES, NUM_PLANTS)
         self.state = []
         self.zombie_count, self.plant_count, self.brains = 0, 0, [0, 1, 2, 3, 4]
 
         self.step_count = 0
+        self.sun_spent = 0
         self.world = World(SceneType.night)
         self._reset_world()
 
     def reset(self):
         self.zombie_count, self.plant_count, self.brains = 0, 0, [0, 1, 2, 3, 4]
         self.step_count = 0
+        self.sun_spent = 0
         self._reset_world()
         return self.get_state_and_mask()
 
@@ -65,6 +66,7 @@ class IZenv:
             "zombie_count": self.zombie_count,
             "plant_count": self.plant_count,
             "brain_count": len(self.brains),
+            "sun_spent_before_action": self.sun_spent,
         }
 
         self._take_action(action)
@@ -115,24 +117,33 @@ class IZenv:
             return GameStatus.LOSE
         return GameStatus.CONTINUE
 
+    def _get_reward_pen_for_sun(self, prev, game_status):
+        if game_status == GameStatus.LOSE:
+            return -72
+
+        earned_sun = self.get_sun() - prev["sun_after_action"]
+        spent_sun = prev["sun_before_action"] - prev["sun_after_action"]
+
+        reward = (
+            earned_sun - spent_sun * (1.001 ** prev["sun_spent_before_action"])
+        ) / 25
+        if game_status == GameStatus.WIN:
+            reward += self.get_sun() / 25
+        return reward
+
     def _get_reward_plain(self, prev, game_status):
         if game_status == GameStatus.LOSE:
             return -72
         return (self.get_sun() - prev["sun_before_action"]) / 25
 
     def _get_reward(self, prev, action, game_status):
-        # return self._get_reward_plain(prev, game_status)
-
-        # earned_sun = self.get_sun() - prev["sun_after_action"]
-        # eaten_plant_num = prev["plant_count"] - self.plant_count
-        eaten_brain_num = prev["brain_count"] - len(self.brains)
+        return self._get_reward_plain(prev, game_status)
+        if game_status == GameStatus.LOSE:
+            return -72
 
         reward = (self.get_sun() - prev["sun_before_action"]) / 25
-        reward += eaten_brain_num * 8
         if game_status == GameStatus.WIN:
-            reward += self.get_sun() / 25
-        if game_status == GameStatus.LOSE:
-            reward = -72
+            reward += self.get_sun() / 25 / 2
         return reward
 
     def _reset_world(self) -> None:
@@ -143,8 +154,6 @@ class IZenv:
         plant_list = [
             plant for plant, count in plant_counts.items() for _ in range(count)
         ]
-        if self.fix_rand:
-            np.random.seed(0)
         np.random.shuffle(plant_list)
         for index, plant in enumerate(plant_list):
             self.world.plant_factory.create(
@@ -161,6 +170,7 @@ class IZenv:
             row = action % N_LANES
             col = 4
             sun = self.get_sun() - zombie_deck[z_idx][1]
+            self.sun_spent += zombie_deck[z_idx][1]
             assert sun >= 0
             self.world.zombie_factory.create(zombie_deck[z_idx][0], row, col)
             self.world.scene.set_sun(sun)
@@ -169,6 +179,7 @@ class IZenv:
         self.state, self.zombie_count, self.plant_count = self.ob_factory.create(
             self.world
         )
+        self.state.append(self.sun_spent / 1950)
 
         self.brains = []
         for i, b in enumerate(self.state[BRAIN_BASE : BRAIN_BASE + 5]):
