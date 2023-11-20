@@ -1,8 +1,19 @@
 import numpy as np
-import json
-import math
-from pvzemu import World, SceneType, ZombieType, PlantType
-from .config import *
+from pvzemu import (
+    World,
+    SceneType,
+    ZombieType,
+    PlantType,
+    Scene,
+    SunData,
+    PlantList,
+    PlantStatus,
+    ZombieList,
+    ZombieStatus,
+    ZombieAccessory1,
+)
+from . import config
+
 
 plant_counts = {
     PlantType.sunflower: 9,
@@ -17,17 +28,31 @@ zombie_deck = [
     [ZombieType.football, 175],
 ]
 
+EAT_BRAIN_X_THRES = 25
+
 
 class IZenv:
-    def __init__(self, max_step=1_200, disable_col_6_to_9=False):
-        self.action_no = N_ZOMBIE_TYPE * N_LANES * Z_LANE_LENGTH + 1
-        self.reset()
-        self._max_step = max_step
-        self._step_count = 0
-        self._brain_status = np.array([1, 1, 1, 1, 1])
-        self._disable_col_6_to_9 = disable_col_6_to_9
+    def __init__(self, step_length=50, max_step=None, fix_rand=False):
+        self.step_length = step_length
+        self.max_step = max_step
+        self.fix_rand = fix_rand
 
-    def reset(self):
+        self.state = None
+        self._zombie_count = 0
+        self._plant_count = 0
+        self.step_count = 0
+        self._brain_status = np.array([1, 1, 1, 1, 1])
+        self.world = World(SceneType.night)
+        self._reset_world()
+
+    def reset(self) -> None:
+        self._zombie_count = 0
+        self._plant_count = 0
+        self.step_count = 0
+        self._brain_status = np.array([1, 1, 1, 1, 1])
+        self._reset_world()
+
+    def _reset_world(self) -> None:
         self.world = World(SceneType.night)
         self.world.scene.stop_spawn = True
         self.world.scene.is_iz = True
@@ -35,193 +60,258 @@ class IZenv:
         plant_list = [
             plant for plant, count in plant_counts.items() for _ in range(count)
         ]
+        if self.fix_rand:
+            np.random.seed(0)
         np.random.shuffle(plant_list)
         for index, plant in enumerate(plant_list):
-            x = index // P_LANE_LENGTH  # Row index
-            y = index % P_LANE_LENGTH  # Column index
-            self.world.plant_factory.create(plant, x, y)
-        self._data = json.loads(self.world.get_json())
-        self._step_count = 0
-        self._brain_status = np.array([1, 1, 1, 1, 1])
-        return self.get_state()
+            self.world.plant_factory.create(
+                plant,
+                index // config.P_LANE_LENGTH,
+                index % config.P_LANE_LENGTH,
+            )
+        self._sync_state_with_world()
+
+    def get_state_and_mask(self):
+        return self.state, self.get_action_mask()
+
+    def _get_game_status(self):
+        if self.max_step is not None and self.step_count >= self.max_step:
+            return config.GameStatus.TIMEUP
+        if self._get_brain_num() == 0:
+            return config.GameStatus.WIN
+        if self.get_sun() < 50 and self._get_zombie_num() == 0:
+            return config.GameStatus.LOSE
+        return config.GameStatus.CONTINUE
+
+    def _get_reward(self, prev, action, game_status):
+        reward = self.get_sun() - prev["sun"]
+        # reward += 100 * (prev["brain_num"] - self._get_brain_num())
+        if game_status == config.GameStatus.LOSE:
+            reward -= 1800
+        # if game_status == config.GameStatus.WIN:
+        # reward += self.get_sun() * 5
+        # reward -= 10
+
+        return reward
+        # reward += 25 * max(prev["plant_num"] - self._get_plant_num(), 0)
+        # elif game_status == config.GameStatus.WIN:
+        #     reward += self.get_sun()
+        # reward = 1000 * (prev["brain_num"] - self._get_brain_num())
+
+        # reward -= 10 * max(prev["zombie_num"] - self._get_zombie_num(), 0)
+        # reward -= max(prev["sun"] - self.get_sun(), 0)
+
+        # if game_status == config.GameStatus.WIN:
+        #     reward += 5 * self.get_sun()
+
+        # return reward
 
     def step(self, action):
-        self._step_count += 1
-        self._data = json.loads(self.world.get_json())
-        prev_sun = self._get_sun()
-        prev_brain_num = self._get_brain_num()
+        self.step_count += 1
+        prev = {
+            "sun": self.get_sun(),
+            "zombie_num": self._get_zombie_num(),
+            "plant_num": self._get_plant_num(),
+            "brain_num": self._get_brain_num(),
+        }
 
         self._take_action(action)
-        for _ in range(50):
+        for _ in range(self.step_length):
             self.world.update()
+        self._sync_state_with_world()
 
-        self._data = json.loads(self.world.get_json())
-
-        state = self.get_state()
-        # print(state)
-        reward = self._get_sun() - prev_sun
-        if (self._has_lost(state)):
-            reward = -500
-        if (self._has_won(state)):
-            reward += 500
-        is_done = (
-            self._has_lost(state)
-            or self._has_won(state)
-            or self._step_count >= self._max_step
+        game_status = self._get_game_status()
+        return (
+            self._get_reward(prev, action, game_status),
+            self.state,
+            self.get_action_mask(),
+            game_status,
         )
-        return reward, state, is_done
 
-    def _take_action(self, action):
-        if action > 0:
-            action -= 1
-            z_idx = action // (N_LANES * Z_LANE_LENGTH)
-            action_area = action % (N_LANES * Z_LANE_LENGTH)
-            row = action_area // N_LANES
-            col = action_area % N_LANES + 4
-            sun = self._get_sun()
-            # print(sun)
-            sun -= zombie_deck[z_idx][1]
-            if sun < 0:
-                print("error, sun cannot be negative")
-                return
-            self.world.zombie_factory.create(zombie_deck[z_idx][0], row, col)
-            # print(type(sun))
-            # print(zombie_deck[z_idx][1])
-            self.world.scene.set_sun(sun)
+    def get_valid_actions(self, action_mask):
+        actions = np.arange(config.ACTION_SIZE)
+        return actions[action_mask]
 
-    def get_state(self):
-        # Each plant HP, intialize to 0 to indicate if there is no plant
-        plant_hps = np.zeros(N_LANES * P_LANE_LENGTH, dtype=float)
-        # Each plant type, intialize to 0 to indicate if there is no plant
-        plant_types = np.zeros(N_LANES * P_LANE_LENGTH, dtype=int)
-        # Each zombie HP, intialize to 0 to indicate if there is no zombie
-        zombie_hps = np.zeros(N_LANES * LANE_LENGTH, dtype=float)
-        # Each zombie type, intialize to 0 to indicate if there is no zombie
-        zombie_types = np.zeros(N_LANES * LANE_LENGTH, dtype=int)
-        # Total sun
-        sun = np.array([self._get_sun() / SUN_MAX])
+    def get_action_mask(self):
+        sun = self.get_sun()
+        mask = np.zeros(config.ACTION_SIZE, dtype=bool)
+        if self._get_zombie_num() > 0:
+            mask[0] = True
+        if sun >= 50:
+            mask[1:6] = True
+        if sun >= 125:
+            mask[6:11] = True
+        if sun >= 175:
+            mask[11:16] = True
+        for row in range(5):
+            if self._brain_status[row] == 0:
+                for i in range(3):
+                    mask[i * 5 + row + 1] = False
+        return mask
 
-        for plant in self._data["plants"]:
-            plant_hps[plant["row"] * P_LANE_LENGTH + plant["col"]] = (
-                plant["hp"] / P_MAX_HP
+    def _sync_state_with_world(self):
+        plant_hps = np.zeros(config.N_LANES * config.P_LANE_LENGTH, dtype=float)
+        plant_type_nums = np.zeros(config.N_LANES * config.P_LANE_LENGTH, dtype=float)
+        zombie_hps = np.zeros(config.N_LANES * config.LANE_LENGTH, dtype=float)
+        zombie_type_nums = np.zeros(config.N_LANES * config.LANE_LENGTH, dtype=float)
+        sun = np.array([self.get_sun() / config.SUN_MAX])
+
+        self._plant_count = 0
+        for plant in self.world.scene.plants:
+            if plant.status == PlantStatus.squash_crushed:
+                continue
+
+            self._plant_count += 1
+
+            plant_hps[plant.row * config.P_LANE_LENGTH + plant.col] = (
+                plant.hp / config.P_MAX_HP
+            )
+            plant_type_nums[plant.row * config.P_LANE_LENGTH + plant.col] = (
+                self._plant_type_to_plant_num(plant.type) / config.N_PLANT_TYPE
             )
 
-            # Assign plant type depending on the plant type
-            plant_type = 0
-            if plant["type"] == "sunflower":
-                plant_type = 1
-            elif plant["type"] == "pea_shooter":
-                plant_type = 2
-            elif plant["type"] == "squash":
-                plant_type = 3
-            elif plant["type"] == "snow_pea":
-                plant_type = 4
-
-            plant_types[plant["row"] * P_LANE_LENGTH + plant["col"]] = plant_type / N_PLANT_TYPE
-
-        for zombie in self._data["zombies"]:
+        self._zombie_count = 0
+        for zombie in self.world.scene.zombies:
             # Update brain status for each row
-            if zombie["x"] < 25:
-                self._brain_status[zombie["row"]] = 0
+            if zombie.x < EAT_BRAIN_X_THRES:
+                self._brain_status[zombie.row] = 0
+                continue
 
-            # Calcullate zombie total HP and assign type depending on the zombie type
-            zombie_hp = 0
-            zombie_type = 0
-            if zombie["type"] == "zombie":
-                zombie_type = 1
-                zombie_hp = zombie["hp"] * 0.66
-            elif zombie["type"] == "buckethead":
-                zombie_type = 2
-                zombie_hp = zombie["hp"] * 0.66 + zombie["accessory_1"]["hp"]
-            elif zombie["type"] == "football":
-                zombie_type = 3
-                zombie_hp = zombie["hp"] * 0.66 + zombie["accessory_1"]["hp"]
+            if zombie.is_dead or not zombie.is_not_dying:
+                continue
+
+            self._zombie_count += 1
+            zombie_hp = zombie.hp * 0.66 + zombie.accessory_1.hp
 
             zombie_hps[
-                zombie["row"] * LANE_LENGTH + self._zombie_x_to_col(zombie["x"])
-            ] += (zombie_hp / Z_MAX_HP)
-            zombie_types[
-                zombie["row"] * LANE_LENGTH + self._zombie_x_to_col(zombie["x"])
-            ] = zombie_type / N_ZOMBIE_TYPE
+                zombie.row * config.LANE_LENGTH + self._zombie_x_to_col(zombie.x)
+            ] += (zombie_hp / config.Z_MAX_HP)
+            zombie_type_nums[
+                zombie.row * config.LANE_LENGTH + self._zombie_x_to_col(zombie.x)
+            ] = (self._zombie_type_to_zombie_num(zombie.type) / config.N_ZOMBIE_TYPE)
 
-        return np.concatenate(
+        self.state = np.concatenate(
             [
                 plant_hps,
-                plant_types,
+                plant_type_nums,
                 zombie_hps,
-                zombie_types,
+                zombie_type_nums,
                 sun,
                 self._brain_status,
             ]
         )
 
-    def get_valid_actions(self, state):
-        # Example return:
-        # [ 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
-        # 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48
-        # 49 50] or
-        # [ 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
-        # 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48
-        # 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72
-        # 73 74 75] or
-        # [ 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
-        # 24 25]
-        actions = np.arange(self.action_no)
-        masks = self.get_action_mask(state)
-        return actions[masks]
-
-    def get_action_mask(self, state):
-        sun = state[-6] * SUN_MAX
-        z_no = self._get_zombie_num(state)
-        mask = np.zeros(self.action_no, dtype=bool)
-        if z_no > 0:
-            mask[0] = True
-        if sun >= 50:
-            mask[1:26] = True
-        if sun >= 125:
-            mask[26:51] = True
-        if sun >= 175:
-            mask[51:] = True
-        if self._disable_col_6_to_9:
-            for i in range(1, 76):
-                if i % 5 != 1:
-                    mask[i] = False
-        return mask
+    def _take_action(self, action):
+        if action > 0:
+            action -= 1
+            z_idx = action // config.N_LANES
+            row = action % config.N_LANES
+            col = 4
+            sun = self.get_sun() - zombie_deck[z_idx][1]
+            assert sun >= 0
+            self.world.zombie_factory.create(zombie_deck[z_idx][0], row, col)
+            self.world.scene.set_sun(sun)
 
     def _zombie_x_to_col(self, x):
-        col = (x - 10) / 80 - 1
-        return math.ceil(col)
+        col = int((x + 40) // 80)
+        col = max(col, 0)
+        col = min(col, config.LANE_LENGTH - 1)
+        return col
 
-    def _get_sun(self):
-        return self._data["sun"]["sun"]
-    
+    def get_sun(self):
+        return self.world.scene.sun.sun
+
     def _get_brain_num(self):
-        return np.count_nonzero(self._brain_status == 0)
+        return np.count_nonzero(self._brain_status == 1)
 
-    def _get_reward(self):
-        sun = self._get_sun()
-        return sun // 25
+    def _get_zombie_num(self):
+        return self._zombie_count
 
-    def _get_zombie_num(self, state):
-        zombieNum = 45 + state[ZOMBIE_TYPE_START:ZOMBIE_TYPE_END].sum()
+    def _get_plant_num(self):
+        return self._plant_count
 
-        return zombieNum
+    def _plant_num_to_str(self, plant_num):
+        plant_num = int(round(plant_num))
+        if plant_num == 1:
+            return "sun"
+        if plant_num == 2:
+            return "pea"
+        if plant_num == 3:
+            return "sqa"
+        if plant_num == 4:
+            return "sno"
+        return "___"
 
-    def _has_lost(self, state):
-        if self._has_won(state):
-            return False
-        
-        sun = self._get_sun()
-        zombieNum = self._get_zombie_num(state)
+    def _plant_type_to_plant_num(self, plant_type):
+        if plant_type == PlantType.sunflower:
+            return 1
+        if plant_type == PlantType.pea_shooter:
+            return 2
+        if plant_type == PlantType.squash:
+            return 3
+        if plant_type == PlantType.snow_pea:
+            return 4
+        return 0
 
-        if sun < 50 and zombieNum == 0:
-            return True
+    def _zombie_num_to_str(self, zombie_num):
+        zombie_num = int(round(zombie_num))
+        if zombie_num == 1:
+            return "Z"
+        if zombie_num == 2:
+            return "B"
+        if zombie_num == 3:
+            return "F"
+        return "_"
 
-        return False
+    def _zombie_type_to_zombie_num(self, zombie_type):
+        if zombie_type == ZombieType.zombie:
+            return 1
+        if zombie_type == ZombieType.buckethead:
+            return 2
+        if zombie_type == ZombieType.football:
+            return 3
+        return 0
 
-    def _has_won(self, state):
-        sum = state[-N_LANES:].sum()
-        if sum == 0:
-            return True
+    def print_human_readable_state(self, highlight=None):
+        state = self.state
 
-        return False
+        print(f"Allowed actions: {np.where(state[-config.ACTION_SIZE:] > 0.5)[0]}")
+
+        print("==Plant HP==")
+        for row in range(5):
+            print(
+                f"row {row+1}: {state[row * config.P_LANE_LENGTH  :(row+1)*config.P_LANE_LENGTH ] * config.P_MAX_HP}"
+            )
+
+        state = state[5 * config.P_LANE_LENGTH :]
+        print("==Plant Type==")
+        for row in range(5):
+            plant_nums = (
+                state[row * config.P_LANE_LENGTH : (row + 1) * config.P_LANE_LENGTH]
+                * config.N_PLANT_TYPE
+            )
+            print(f"row {row+1}: {[self._plant_num_to_str(p) for p in plant_nums]}")
+
+        state = state[5 * config.P_LANE_LENGTH :]
+        print("==Zombie HP==")
+        for row in range(5):
+            print(
+                f"row {row+1}: {state[row * config.LANE_LENGTH:(row+1)*config.LANE_LENGTH] * config.Z_MAX_HP}"
+            )
+
+        state = state[5 * config.LANE_LENGTH :]
+        print("==Zombie Type==")
+        highlight_row, highlight_col = (-1, -1) if highlight is None else highlight
+        for row in range(5):
+            zombie_nums = (
+                state[row * config.LANE_LENGTH : (row + 1) * config.LANE_LENGTH]
+                * config.N_ZOMBIE_TYPE
+            )
+            zombie_strs = [self._zombie_num_to_str(z) for z in zombie_nums]
+            if row == highlight_row:
+                zombie_strs[highlight_col] = f"[{zombie_strs[highlight_col]}]"
+            print(f"row {row+1}: {zombie_strs}")
+
+        print(
+            f"Step: {self.step_count}; Sun: {self.get_sun()}; Brains: {self._get_brain_num()}; Game status: {self._get_game_status().name} "
+        )

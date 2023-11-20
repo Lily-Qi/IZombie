@@ -3,7 +3,7 @@ import numpy as np
 import os
 
 from izombie_env import config
-from izombie_env import simple_env as iz_env
+from izombie_env import env as iz_env
 
 
 def evaluate_agent(agent, max_step=None, test_size=10):
