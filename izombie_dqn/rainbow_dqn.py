@@ -131,6 +131,8 @@ class DQNAgent:
             atom_size (int): the unit number of support
             n_step (int): step number to calculate n-step td error
         """
+        if atom_size is None:
+            atom_size = v_max - v_min + 1
         obs_dim = STATE_SIZE
         action_dim = ACTION_SIZE
 
@@ -192,6 +194,7 @@ class DQNAgent:
         self.losses = []
         self.game_results = []
         self.steps = []
+        self.scores = []
 
     def get_best_q_action(self, state, mask):
         """Select an action from the input state."""
@@ -289,10 +292,12 @@ class DQNAgent:
 
         state, mask = self.env.reset()
         start_time = datetime.datetime.now()
+        score = 0
 
         for step_idx in range(1, num_steps + 1):
             action = self.get_best_q_action(state, mask)
             state, mask, reward, game_status, done = self.step(action)
+            score += reward
 
             # NoisyNet: removed decrease of epsilon
 
@@ -304,6 +309,8 @@ class DQNAgent:
             if done:
                 self.game_results.append(game_status)
                 self.steps.append(self.env.step_count)
+                self.scores.append(score)
+                score = 0
                 if game_status == GameStatus.WIN:
                     self.winning_suns.append(self.env.get_sun())
                 state, mask = self.env.reset()
@@ -398,6 +405,7 @@ class DQNAgent:
             f"Mean losses {np.mean(self.losses[-stats_window:]):.2f} "
             f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
             f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
+            f"Mean score {np.mean(self.scores[-stats_window:]):.2f} "
             f"Win {win_rate:.2f}% "
             f"{elasped_seconds / curr_step * 1_000_000:.2f}s/1m steps"
         )

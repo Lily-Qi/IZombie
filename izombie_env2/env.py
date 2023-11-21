@@ -132,12 +132,13 @@ class IZenv:
         return reward
 
     def _get_reward_plain(self, prev, game_status):
-        if game_status == GameStatus.LOSE:
-            return -72
+        # if game_status == GameStatus.LOSE:
+        #     return 0
         return (self.get_sun() - prev["sun_before_action"]) / 25
 
     def _get_reward(self, prev, action, game_status):
         return self._get_reward_plain(prev, game_status)
+
         if game_status == GameStatus.LOSE:
             return -72
 

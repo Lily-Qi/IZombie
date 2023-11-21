@@ -35,9 +35,9 @@ agent = DQNAgent(
     alpha=0.2,
     beta=0.6,
     prior_eps=1e-6,
-    v_min=-72.0,
-    v_max=55.0,
-    atom_size=51,
+    v_min=-6,
+    v_max=55,
+    atom_size=None,
     n_step=3,
     lr=1e-3,
 )
@@ -45,10 +45,10 @@ agent = DQNAgent(
 # manually_test_agent(agent, fix_rand=False)
 agent.train(
     update_target_every=2000,
-    update_main_every=32,
+    update_main_every=16,
     num_steps=num_steps,
     print_stats_every=100_000,
     save_every=500_000,
     eval_every=500_000,
 )
-evaluate_agent(agent)
+# evaluate_agent(agent)

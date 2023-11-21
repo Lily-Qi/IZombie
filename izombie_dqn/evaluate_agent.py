@@ -55,9 +55,9 @@ def evaluate_agent(agent, test_size=500, step_count=None, output_file=None):
         start_new_file = not os.path.exists(output_file)
         with open(output_file, "a", encoding="utf-8") as f:
             if start_new_file:
-                f.write("step,test_size,win,lose,mean_steps,mean_winning_suns,\n")
+                f.write("step,test_size,win,mean_winning_suns,mean_steps,\n")
             f.write(
-                f"{step_count},{test_size},{percentages[GameStatus.WIN]:.2f}%,{percentages[GameStatus.LOSE]:.2f}%,{np.mean(steps):.2f},{np.mean(winning_suns):.2f}\n"
+                f"{format_num(step_count)},{test_size},{percentages[GameStatus.WIN]:.2f}%,{np.mean(winning_suns):.2f},{np.mean(steps):.2f}\n"
             )
 
     agent.set_to_training_mode()
