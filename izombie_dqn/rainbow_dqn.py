@@ -2,9 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from numpy import ndarray
 from torch.nn.utils import clip_grad_norm_
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List, Any
 import datetime
 import os
 
@@ -13,7 +14,7 @@ from .replay_buffer import PrioritizedReplayBuffer, ReplayBuffer
 from .util import get_timestamp, create_folder_if_not_exist, format_num
 
 from izombie_env2.env import IZenv
-from izombie_env2.config import ACTION_SIZE, STATE_SIZE
+from izombie_env2.config import ACTION_SIZE, STATE_SIZE, GameStatus
 from izombie_env2.config import GameStatus
 from .evaluate_agent import evaluate_agent
 
@@ -35,6 +36,8 @@ class Network(nn.Module):
             nn.ReLU(),
         )
 
+        self.lstm = nn.LSTM(input_size=128, hidden_size=128, batch_first=True)
+
         # set advantage layer
         self.advantage_hidden_layer = NoisyLinear(128, 128)
         self.advantage_layer = NoisyLinear(128, out_dim * atom_size)
@@ -44,15 +47,16 @@ class Network(nn.Module):
         self.value_layer = NoisyLinear(128, atom_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward method implementation."""
-        dist = self.dist(x)
-        q = torch.sum(dist * self.support, dim=2)
-
-        return q
+        feature = self.feature_layer(x)
+        lstm_out, _ = self.lstm(feature.view(len(feature), 1, -1))
+        lstm_out = lstm_out.view(len(feature), -1)
+        return self._compute_dist(lstm_out)
 
     def dist(self, x: torch.Tensor) -> torch.Tensor:
-        """Get distribution for atoms."""
         feature = self.feature_layer(x)
+        return self._compute_dist(feature)
+
+    def _compute_dist(self, feature: torch.Tensor) -> torch.Tensor:
         adv_hid = F.relu(self.advantage_hidden_layer(feature))
         val_hid = F.relu(self.value_hidden_layer(feature))
 
@@ -60,9 +64,7 @@ class Network(nn.Module):
         value = self.value_layer(val_hid).view(-1, 1, self.atom_size)
         q_atoms = value + advantage - advantage.mean(dim=1, keepdim=True)
 
-        dist = F.softmax(q_atoms, dim=-1)
-        dist = dist.clamp(min=1e-3)  # for avoiding nans
-
+        dist = F.softmax(q_atoms, dim=-1).clamp(min=1e-3)
         return dist
 
     def reset_noise(self):
@@ -140,6 +142,7 @@ class DQNAgent:
         self.model_name = model_name
         self.batch_size = batch_size
         self.gamma = gamma
+
         # NoisyNet: All attributes related to epsilon are removed
 
         # device: cpu / gpu
@@ -196,39 +199,50 @@ class DQNAgent:
         self.steps = []
         self.scores = []
 
+        # UCB
+        self.action_count = np.zeros(action_dim)
+        self.action_rewards = np.zeros(action_dim)
+
     def get_best_q_action(self, state, mask):
-        """Select an action from the input state."""
-        # NoisyNet: no epsilon greedy action selection
+        total_action_count = sum(self.action_count)
+        if total_action_count > 0:
+            ucb_values = self.action_rewards + np.sqrt(2 * np.log(total_action_count) / (self.action_count + 1e-5))
+        else:
+            ucb_values = np.zeros_like(self.action_rewards)
+
+        ucb_values[self.action_count == 0] = float('inf')
+        selected_action = np.argmax(ucb_values)
+        self.action_count[selected_action] += 1
+
         with torch.no_grad():
             valid_actions = self.env.get_valid_actions(mask)
-            q_values = self.dqn(
-                torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            ).detach()
+            q_values = self.dqn(torch.FloatTensor(state).unsqueeze(0).to(self.device)).detach()
             valid_q_values = q_values[0, valid_actions]
             max_q_index = torch.argmax(valid_q_values).item()
-            selected_action = valid_actions[max_q_index]
+            selected_action = valid_actions[max_q_index] if max_q_index < len(valid_actions) else valid_actions[0]
 
             if not self.is_test:
                 self.transition = [state, selected_action]
 
             return selected_action
 
-    def step(self, action: np.ndarray) -> Tuple[np.ndarray, np.float64, bool]:
-        """Take an action and return the response of the env."""
+    def step(self, action: np.ndarray) -> tuple[Any, Any, Any, Any, bool | Any]:
         reward, next_state, next_mask, game_status = self.env.step(action)
+
+        # Safely update action count and rewards to avoid division by zero
+        self.action_count[action] += 1
+        self.action_rewards[action] += (reward - self.action_rewards[action]) / self.action_count[action]
+
         done = game_status != GameStatus.CONTINUE
 
         if not self.is_test:
             self.transition += [reward, next_state, done]
 
-            # N-step transition
             if self.use_n_step:
                 one_step_transition = self.memory_n.store(*self.transition)
-            # 1-step transition
             else:
                 one_step_transition = self.transition
 
-            # add a single step transition
             if one_step_transition:
                 self.memory.store(*one_step_transition)
 
@@ -276,14 +290,14 @@ class DQNAgent:
         return loss.item()
 
     def train(
-        self,
-        num_steps: int,
-        stats_window: int = 1_000,
-        print_stats_every=30_000,
-        update_target_every=2000,
-        update_main_every=1,
-        save_every=None,
-        eval_every=None,
+            self,
+            num_steps: int,
+            stats_window: int = 1_000,
+            print_stats_every=30_000,
+            update_target_every=2000,
+            update_main_every=1,
+            save_every=None,
+            eval_every=None,
     ):
         """Train the agent."""
         model_dir = f"model/{self.model_name}_{get_timestamp()}"
@@ -317,8 +331,8 @@ class DQNAgent:
 
             # if training is ready
             if (
-                len(self.memory) >= self.batch_size
-                and step_idx % update_main_every == 0
+                    len(self.memory) >= self.batch_size
+                    and step_idx % update_main_every == 0
             ):
                 loss = self.update_main_model()
                 self.losses.append(loss)
@@ -336,28 +350,23 @@ class DQNAgent:
                 )
 
             if (
-                save_every is not None and step_idx % save_every == 0
+                    save_every is not None and step_idx % save_every == 0
             ) or step_idx == num_steps:
                 self.save(f"{model_dir}/{format_num(step_idx)}.pth")
 
-    def _compute_dqn_loss(
-        self, samples: Dict[str, np.ndarray], gamma: float
-    ) -> torch.Tensor:
-        """Return categorical dqn loss."""
+    def _compute_dqn_loss(self, samples: Dict[str, np.ndarray], gamma: float) -> torch.Tensor:
         state = torch.FloatTensor(samples["obs"]).to(self.device)
         next_state = torch.FloatTensor(samples["next_obs"]).to(self.device)
         action = torch.LongTensor(samples["acts"]).to(self.device)
         reward = torch.FloatTensor(samples["rews"].reshape(-1, 1)).to(self.device)
         done = torch.FloatTensor(samples["done"].reshape(-1, 1)).to(self.device)
 
-        # Categorical DQN algorithm
         delta_z = float(self.v_max - self.v_min) / (self.atom_size - 1)
 
         with torch.no_grad():
-            # Double DQN
-            next_action = self.dqn(next_state).argmax(1)
+            next_action = self.dqn(next_state).argmax(1).unsqueeze(-1)
             next_dist = self.dqn_target.dist(next_state)
-            next_dist = next_dist[range(self.batch_size), next_action]
+            next_dist = next_dist.gather(1, next_action).squeeze(-1)
 
             t_z = reward + (1 - done) * gamma * self.support
             t_z = t_z.clamp(min=self.v_min, max=self.v_max)
@@ -395,19 +404,19 @@ class DQNAgent:
 
     def print_stats(self, stats_window, curr_step, total_step, start_time):
         win_rate = (
-            sum(1 for res in self.game_results[-stats_window:] if res == GameStatus.WIN)
-            * 100
-            / min(stats_window, len(self.game_results))
+                sum(1 for res in self.game_results[-stats_window:] if res == GameStatus.WIN) * 100
+                / max(len(self.game_results[-stats_window:]), 1)
         )
-        elasped_seconds = (datetime.datetime.now() - start_time).total_seconds()
+        elapsed_seconds = (datetime.datetime.now() - start_time).total_seconds()
+        avg_loss = np.mean(self.losses[-stats_window:]) if self.losses else 0
+        avg_winning_sun = np.mean(self.winning_suns[-stats_window:]) if self.winning_suns else 0
+        avg_steps = np.mean(self.steps[-stats_window:]) if self.steps else 0
+        avg_score = np.mean(self.scores[-stats_window:]) if self.scores else 0
+
         print(
-            f"Sp {format_num(curr_step)}/{format_num(total_step)} "
-            f"Mean losses {np.mean(self.losses[-stats_window:]):.2f} "
-            f"Mean winning sun {np.mean(self.winning_suns[-stats_window:]):.2f} "
-            f"Mean steps {np.mean(self.steps[-stats_window:]):.2f} "
-            f"Mean score {np.mean(self.scores[-stats_window:]):.2f} "
-            f"Win {win_rate:.2f}% "
-            f"{elasped_seconds / curr_step * 1_000_000:.2f}s/1m steps"
+            f"Step {curr_step}/{total_step} - Loss: {avg_loss:.4f}, Avg Winning Sun: {avg_winning_sun:.2f}, "
+            f"Avg Steps: {avg_steps:.2f}, Avg Score: {avg_score:.2f}, Win Rate: {win_rate:.2f}%, "
+            f"Elapsed Time: {elapsed_seconds:.2f}s"
         )
 
     def set_to_training_mode(self):

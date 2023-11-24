@@ -27,7 +27,7 @@ env = IZenv()
 num_steps = 3_000_000
 agent = DQNAgent(
     env,
-    device="cpu",
+    device="cuda",
     model_name="r2",
     memory_size=1_000_000,
     batch_size=128,

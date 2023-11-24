@@ -58,8 +58,8 @@ if __name__ == "__main__":
     for thread in threads:
         thread.join()
 
-    best_agent.save_checkpoint(f"{MODEL_DIR}/out.pth")
-    print(f"{best_winning_rate=}")
+    # best_agent.save_checkpoint(f"{MODEL_DIR}/out.pth")
+    # print(f"{best_winning_rate=}")
 
     # agent.load_checkpoint("model/320,100,16_2023.11.16_10.36.19/model_90000.pth.zip")
     # agent.reset_epsilon(
