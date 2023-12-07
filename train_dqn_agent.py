@@ -1,30 +1,24 @@
 import torch
+import threading
 
-from izombie_env import simple_env as iz_env
-from izombie_dqn.evaluate_agent import manually_test_agent
+from izombie_dqn.evaluate_agent import manually_test_agent, evaluate_agent
 from izombie_dqn.dqn_agent import DQNAgent
 
-# from izombie_dqn.dqn_agent_2 import DQNAgent, experienceReplayBuffer_DQN, QNetwork_DQN
-# import torch
 
-# if __name__ == "__main__":
-#     n_iter = 100000
-#     env = iz_env.IZenv(disable_col_6_to_9=True)
-#     nn_name = "test"
-#     buffer = experienceReplayBuffer_DQN(memory_size=100000, burn_in=10000)
-#     net = QNetwork_DQN(env, device="cuda")
-#     agent = DQNAgent(env, net, buffer, batch_size=200)
-#     agent.train(max_episodes=n_iter, evaluate_frequency=5000, evaluate_n_iter=1000)
-#     torch.save(agent.network, nn_name)
-#     agent._save_training_data(nn_name)
+MODEL_DIR = "reward_2"
+
+lock = threading.Lock()
+best_agent = None
+best_winning_rate = 0
 
 
-if __name__ == "__main__":
+def train_one(i):
     agent = DQNAgent(
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        model_dir=MODEL_DIR,
+        device="cpu",
         learning_rate=1e-3,
         step_length=50,
-        max_step_per_ep=500,
+        max_step_per_ep=100_000,
         fix_rand=False,
         replay_memory_size=100_000,
         min_replay_memory_size=10_000,
@@ -33,13 +27,46 @@ if __name__ == "__main__":
         epsilon_length=100_000,
         start_epsilon=1.0,
         epsilon_interpolation="exponential",
-        end_epsilon=0.1,
+        end_epsilon=0.05,
     )
+    agent.model_name = f"{i + 1}"
+
     agent.train(
-        episodes=10_000,
-        update_main_every_n_steps=1,
-        update_target_every_n_steps=200,
-        eval_every_n_episodes=1000,
+        num_steps=100_000,
+        update_main_every=32,
+        update_target_every=2_000,
+        eval_every=None,
+        evaluate_test_size=500,
+        save_every=None,
         stats_window=1_000,
     )
-    manually_test_agent(agent)
+    winning_rate, _ = evaluate_agent(agent, test_size=500)
+    with lock:
+        global best_agent, best_winning_rate
+        if winning_rate > best_winning_rate:
+            best_agent = agent
+            best_winning_rate = winning_rate
+
+
+if __name__ == "__main__":
+    threads = []
+    for i in range(10):
+        thread = threading.Thread(target=train_one, args=(i,))
+        thread.start()
+        threads.append(thread)
+
+    for thread in threads:
+        thread.join()
+
+    # best_agent.save_checkpoint(f"{MODEL_DIR}/out.pth")
+    # print(f"{best_winning_rate=}")
+
+    # agent.load_checkpoint("model/320,100,16_2023.11.16_10.36.19/model_90000.pth.zip")
+    # agent.reset_epsilon(
+    #     epsilon_length=2,
+    #     start_epsilon=0.05,
+    #     epsilon_interpolation="exponential",
+    #     end_epsilon=0.05,
+    # )
+
+    # manually_test_agent(agent)
